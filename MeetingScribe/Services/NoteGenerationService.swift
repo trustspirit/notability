@@ -5,15 +5,12 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         case httpError(Int)
         case missingContent
         case invalidResponse
+        case missingAPIKey
     }
 
-    private let apiKey: String
-    private let model: String
     private let httpClient: HTTPClient
 
-    init(apiKey: String, model: String = "gpt-5.5", httpClient: HTTPClient = URLSession.shared) {
-        self.apiKey = apiKey
-        self.model = model
+    init(httpClient: HTTPClient = URLSession.shared) {
         self.httpClient = httpClient
     }
 
@@ -24,6 +21,10 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
     }
 
     private func chatCompletion(systemPrompt: String, userContent: String) async throws -> String {
+        guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
+            throw APIError.missingAPIKey
+        }
+        let model = ModelSettings.shared.noteModel
         let body: [String: Any] = [
             "model": model,
             "response_format": ["type": "json_object"],

@@ -4,37 +4,39 @@ final class TranscriptionService: TranscriptionServiceProtocol {
     enum APIError: Error {
         case httpError(Int)
         case invalidResponse
+        case missingAPIKey
     }
 
-    private let apiKey: String
-    private let model: String
     private let httpClient: HTTPClient
 
-    init(apiKey: String, model: String = "gpt-4o-transcribe", httpClient: HTTPClient = URLSession.shared) {
-        self.apiKey = apiKey
-        self.model = model
+    init(httpClient: HTTPClient = URLSession.shared) {
         self.httpClient = httpClient
     }
 
     func transcribe(audioURL: URL, timestamp: TimeInterval) async throws -> TranscriptChunk {
+        guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
+            throw APIError.missingAPIKey
+        }
+        let model = ModelSettings.shared.transcriptionModel
+
         let audioData = try Data(contentsOf: audioURL)
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = buildMultipartBody(audioData: audioData, filename: audioURL.lastPathComponent, boundary: boundary)
+        request.httpBody = buildMultipartBody(audioData: audioData, filename: audioURL.lastPathComponent, boundary: boundary, model: model)
 
         let (data, response) = try await httpClient.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else { throw APIError.httpError(http.statusCode) }
 
         let text = String(data: data, encoding: .utf8) ?? ""
-        try? FileManager.default.removeItem(at: audioURL)  // clean up temp WAV file
+        try? FileManager.default.removeItem(at: audioURL)
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func buildMultipartBody(audioData: Data, filename: String, boundary: String) -> Data {
+    private func buildMultipartBody(audioData: Data, filename: String, boundary: String, model: String) -> Data {
         var body = Data()
         let CRLF = "\r\n"
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)

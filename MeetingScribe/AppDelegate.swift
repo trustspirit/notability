@@ -13,11 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = MeetingStore()
-        let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key") ?? ""
-        let settings = ModelSettings.shared
+        // Services read API key and model from Keychain/UserDefaults at each request —
+        // no need to pass them at init or recreate on settings change
         let capture = AudioCaptureService()
-        let transcription = TranscriptionService(apiKey: apiKey, model: settings.transcriptionModel)
-        let noteGen = NoteGenerationService(apiKey: apiKey, model: settings.noteModel)
+        let transcription = TranscriptionService()
+        let noteGen = NoteGenerationService()
         coordinator = RecordingCoordinator(
             audioCapture: capture,
             transcription: transcription,
@@ -173,14 +173,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func refreshServicesWithCurrentKey() {
-        guard case .idle = coordinator.state else { return }  // don't refresh mid-recording
-        let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key") ?? ""
-        let settings = ModelSettings.shared
-        let capture = AudioCaptureService()
-        let transcription = TranscriptionService(apiKey: apiKey, model: settings.transcriptionModel)
-        let noteGen = NoteGenerationService(apiKey: apiKey, model: settings.noteModel)
-        coordinator = RecordingCoordinator(audioCapture: capture, transcription: transcription, noteGeneration: noteGen, store: store)
-        observeCoordinatorState()
-    }
 }

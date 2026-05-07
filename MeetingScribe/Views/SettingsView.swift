@@ -59,11 +59,7 @@ struct SettingsView: View {
         .onAppear {
             apiKey = KeychainHelper.load(forKey: keychainKey) ?? ""
         }
-        .onDisappear {
-            if let delegate = NSApp.delegate as? AppDelegate {
-                delegate.refreshServicesWithCurrentKey()
-            }
-        }
+        .onDisappear { }
     }
 }
 
