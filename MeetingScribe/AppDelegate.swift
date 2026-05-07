@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         switch state {
         case .idle:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "MeetingScribe")
+            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notability")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.contentTintColor = nil
             button.title = ""
         case .done, .failed:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "MeetingScribe")
+            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notability")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Meeting Scribe"
+        window.title = "Notability"
         window.contentView = NSHostingView(rootView: contentView)
         window.center()
         window.setFrameAutosaveName("MainWindow")

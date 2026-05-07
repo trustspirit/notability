@@ -21,8 +21,9 @@ targets:
       base:
         INFOPLIST_FILE: MeetingScribe/Info.plist
         CODE_SIGN_ENTITLEMENTS: MeetingScribe/MeetingScribe.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.meetingscribe.app
-        PRODUCT_NAME: MeetingScribe
+        PRODUCT_BUNDLE_IDENTIFIER: com.notability.app
+        PRODUCT_NAME: Notability
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - sdk: ScreenCaptureKit.framework
       - sdk: AVFoundation.framework
