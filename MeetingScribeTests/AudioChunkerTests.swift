@@ -39,7 +39,15 @@ final class AudioChunkerTests: XCTestCase {
     func test_auto_chunk_at_duration() throws {
         let chunker = AudioChunker(chunkDuration: 1, outputDirectory: tempDir)  // 1 second chunk for test
         var chunkCount = 0
-        chunker.onChunk = { _, _ in chunkCount += 1 }
+
+        // With >= boundary: each 16000-frame buffer exactly meets samplesPerChunk (16000),
+        // so each append triggers an emit. 2 buffers → 2 chunks.
+        let expectation = expectation(description: "both chunks emitted")
+        expectation.expectedFulfillmentCount = 2
+        chunker.onChunk = { _, _ in
+            chunkCount += 1
+            expectation.fulfill()
+        }
 
         // append 2 seconds worth of audio
         for i in 0..<2 {
@@ -47,7 +55,8 @@ final class AudioChunkerTests: XCTestCase {
             chunker.append(buffer, timestamp: Double(i))
         }
 
-        XCTAssertEqual(chunkCount, 1)  // 1 chunk completed, 1 partial still buffered
+        wait(for: [expectation], timeout: 2)
+        XCTAssertEqual(chunkCount, 2)  // each 16000-frame buffer hits the >= boundary immediately
     }
 
     private func makeSilenceBuffer(sampleCount: AVAudioFrameCount) -> AVAudioPCMBuffer {

@@ -12,6 +12,7 @@ final class AudioChunker {
     private var chunkStartTimestamp: TimeInterval = 0
     private var isFirstBuffer = true
     private let samplesPerChunk: AVAudioFrameCount
+    private let queue = DispatchQueue(label: "com.meetingscribe.audiochunker", qos: .userInitiated)
 
     init(chunkDuration: Double = 30, outputDirectory: URL = FileManager.default.temporaryDirectory) {
         self.chunkDuration = chunkDuration
@@ -20,6 +21,18 @@ final class AudioChunker {
     }
 
     func append(_ buffer: AVAudioPCMBuffer, timestamp: TimeInterval) {
+        queue.async { [self] in
+            _append(buffer, timestamp: timestamp)
+        }
+    }
+
+    func flush() {
+        queue.async { [self] in
+            _flush()
+        }
+    }
+
+    private func _append(_ buffer: AVAudioPCMBuffer, timestamp: TimeInterval) {
         if isFirstBuffer {
             chunkStartTimestamp = timestamp
             isFirstBuffer = false
@@ -27,24 +40,31 @@ final class AudioChunker {
         accumulatedBuffers.append(buffer)
         accumulatedFrames += buffer.frameLength
 
-        if accumulatedFrames > samplesPerChunk {
-            emitChunk()
+        if accumulatedFrames >= samplesPerChunk {
+            _emitChunk()
         }
     }
 
-    func flush() {
+    private func _flush() {
         guard accumulatedFrames > 0 else { return }
-        emitChunk()
+        _emitChunk()
     }
 
-    private func emitChunk() {
+    private func _emitChunk() {
         guard !accumulatedBuffers.isEmpty else { return }
         let url = outputDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        if let file = try? AVAudioFile(forWriting: url, settings: format.settings,
-                                         commonFormat: .pcmFormatInt16, interleaved: false) {
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings,
+                                       commonFormat: .pcmFormatInt16, interleaved: false)
             for buf in accumulatedBuffers {
-                try? file.write(from: buf)
+                try file.write(from: buf)
             }
+        } catch {
+            print("[AudioChunker] Failed to write WAV chunk: \(error)")
+            accumulatedBuffers = []
+            accumulatedFrames = 0
+            isFirstBuffer = true
+            return  // do NOT call onChunk with a broken file
         }
         let ts = chunkStartTimestamp
         accumulatedBuffers = []
