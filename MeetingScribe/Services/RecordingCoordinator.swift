@@ -36,10 +36,6 @@ final class RecordingCoordinator: ObservableObject {
 
     func startRecording() async throws {
         let id = UUID()
-        let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
-        let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
-        store.save(meeting)
-        currentMeetingId = id
         liveTranscript = []
 
         audioCapture.chunkPublisher
@@ -51,7 +47,13 @@ final class RecordingCoordinator: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Start capture first — only save meeting if it actually succeeds
         try await audioCapture.startCapture()
+
+        let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
+        let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
+        store.save(meeting)
+        currentMeetingId = id
         recordingStart = Date()
         state = .recording(elapsed: 0)
 
