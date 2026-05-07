@@ -7,8 +7,10 @@ final class TranscriptionServiceTests: XCTestCase {
         let client = MockHTTPClient(responseData: mockResponse.data(using: .utf8)!, statusCode: 200)
         let sut = TranscriptionService(apiKey: "sk-test", httpClient: client)
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test.wav")
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try Data().write(to: tempFile)
+        // service deletes the file on success — defer handles unexpected early exit
+        defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 60.0)
 
@@ -20,8 +22,9 @@ final class TranscriptionServiceTests: XCTestCase {
         let client = MockHTTPClient(responseData: Data(), statusCode: 401)
         let sut = TranscriptionService(apiKey: "bad-key", httpClient: client)
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test2.wav")
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
 
         do {
             _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)

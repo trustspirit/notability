@@ -79,7 +79,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frameCount), into: srcBuffer.mutableAudioBufferList)
 
         // Reuse converter as long as source format hasn't changed
-        if cachedConverter == nil || cachedConverter?.inputFormat != srcFormat {
+        if cachedConverter == nil || !(cachedConverter!.inputFormat.isEqual(srcFormat)) {
             cachedConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
         }
         guard let converter = cachedConverter,
