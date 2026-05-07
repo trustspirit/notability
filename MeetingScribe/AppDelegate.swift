@@ -143,30 +143,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func openMainWindow() {
-        if let window = mainWindow {
-            if window.isVisible {
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-                return
-            }
-            mainWindow = nil  // release closed window
+        if mainWindow == nil {
+            let contentView = MainWindowView()
+                .environmentObject(store)
+                .environmentObject(coordinator)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Notability"
+            window.contentView = NSHostingView(rootView: contentView)
+            window.center()
+            window.setFrameAutosaveName("MainWindow")
+            window.isReleasedWhenClosed = false  // keep alive when closed
+            mainWindow = window
         }
-        let contentView = MainWindowView()
-            .environmentObject(store)
-            .environmentObject(coordinator)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Notability"
-        window.contentView = NSHostingView(rootView: contentView)
-        window.center()
-        window.setFrameAutosaveName("MainWindow")
-        window.makeKeyAndOrderFront(nil)
+        mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        mainWindow = window
     }
 
     private func requestNotificationPermission() {
