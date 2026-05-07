@@ -11,6 +11,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     private var stream: SCStream?
     private let chunker: AudioChunker
     private var startDate: Date?
+    private var cachedConverter: AVAudioConverter?
 
     private let captureFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
@@ -28,6 +29,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     }
 
     func startCapture() async throws {
+        guard stream == nil else { return }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
@@ -46,13 +48,22 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
 
         stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
-        try await stream?.startCapture()
+        do {
+            try await stream?.startCapture()
+        } catch {
+            stream = nil
+            throw error
+        }
         startDate = Date()
     }
 
     func stopCapture() {
         Task {
-            try? await stream?.stopCapture()
+            do {
+                try await stream?.stopCapture()
+            } catch {
+                print("[AudioCaptureService] Stream stop error: \(error)")
+            }
             stream = nil
             chunker.flush()
         }
@@ -68,7 +79,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         srcBuffer.frameLength = frameCount
         CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frameCount), into: srcBuffer.mutableAudioBufferList)
 
-        guard let converter = AVAudioConverter(from: srcFormat, to: captureFormat),
+        // Reuse converter as long as source format hasn't changed
+        if cachedConverter == nil || cachedConverter?.inputFormat != srcFormat {
+            cachedConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
+        }
+        guard let converter = cachedConverter,
               let dstBuffer = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: frameCount) else { return }
 
         var error: NSError?
