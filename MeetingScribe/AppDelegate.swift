@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeCoordinatorState() {
+        stateObserver?.cancel()
         stateObserver = Task { [weak self] in
             guard let self else { return }
             for await _ in self.coordinator.$state.values {
@@ -109,10 +110,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func openMainWindow() {
-        if let window = mainWindow, window.isVisible {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
+        if let window = mainWindow {
+            if window.isVisible {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+            mainWindow = nil  // release closed window
         }
         let contentView = MainWindowView()
             .environmentObject(store)
