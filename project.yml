@@ -1,0 +1,43 @@
+# /Users/young/Documents/Workspace/MeetingScribe/project.yml
+name: MeetingScribe
+options:
+  bundleIdPrefix: com.meetingscribe
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  minimumXcodeGenVersion: "2.38.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  MeetingScribe:
+    type: application
+    platform: macOS
+    sources:
+      - MeetingScribe
+    settings:
+      base:
+        INFOPLIST_FILE: MeetingScribe/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MeetingScribe/MeetingScribe.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.meetingscribe.app
+        PRODUCT_NAME: MeetingScribe
+    dependencies:
+      - sdk: ScreenCaptureKit.framework
+      - sdk: AVFoundation.framework
+
+  MeetingScribeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - MeetingScribeTests
+    dependencies:
+      - target: MeetingScribe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.meetingscribe.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MeetingScribe.app/Contents/MacOS/MeetingScribe"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
