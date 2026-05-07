@@ -1,82 +1,82 @@
 # MeetingScribe
 
-macOS 메뉴바 앱으로, Zoom · Google Meet · Teams 등 어떤 미팅 툴에서도 **별도 플러그인 없이** 시스템 오디오를 캡처하고 AI가 미팅 노트를 자동으로 정리해줍니다.
+A macOS menu bar app that captures system audio from any meeting tool — Zoom, Google Meet, Teams — without plugins, and uses AI to automatically generate meeting notes.
 
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
 
-## 기능
+## Features
 
-- **시스템 오디오 캡처** — ScreenCaptureKit으로 어떤 앱의 소리도 캡처 (별도 드라이버 불필요)
-- **실시간 전사** — 30초 청크 단위로 OpenAI `gpt-4o-transcribe`에 전송, 미팅 중 transcript 실시간 표시
-- **AI 노트 생성** — 미팅 종료 후 `gpt-5.5`가 자동으로 정리
-  - **Summary** — 2~3문장 요약
-  - **Action Items** — 담당자 · 마감일 포함 할 일 목록
-  - **Key Decisions** — 핵심 결정 사항
-  - **Full Transcript** — 타임스탬프 포함 전체 스크립트
-- **미팅 히스토리** — 모든 노트가 로컬에 저장, 사이드바에서 바로 접근
+- **System audio capture** — Uses ScreenCaptureKit to record any app's audio without extra drivers
+- **Real-time transcription** — Sends 30-second chunks to OpenAI `gpt-4o-transcribe` and shows the live transcript during the meeting
+- **AI-generated notes** — After the meeting ends, `gpt-5.5` automatically produces:
+  - **Summary** — 2–3 sentence overview
+  - **Action Items** — with assignee and due date
+  - **Key Decisions** — major decisions made
+  - **Full Transcript** — timestamped
+- **Meeting history** — All notes are saved locally and accessible from the sidebar
 
-## 설치
+## Installation
 
-### 요구 사항
+### Requirements
 
-- macOS 14.0 (Sonoma) 이상
-- OpenAI API Key ([발급 받기](https://platform.openai.com/api-keys))
+- macOS 14.0 (Sonoma) or later
+- OpenAI API Key ([get one here](https://platform.openai.com/api-keys))
 
-### 다운로드
+### Download
 
-1. [Releases](../../releases/latest) 페이지에서 `MeetingScribe.zip` 다운로드
-2. 압축 해제 후 `MeetingScribe.app`을 `/Applications`로 이동
-3. 처음 실행 시 **우클릭 → 열기** (공증되지 않은 앱 허용)
+1. Download `MeetingScribe.zip` from the [Releases](../../releases/latest) page
+2. Unzip and move `MeetingScribe.app` to `/Applications`
+3. On first launch, **right-click → Open** to bypass Gatekeeper
 
-> **참고:** Apple Developer Program 공증을 거치지 않아 Gatekeeper 경고가 표시됩니다.  
-> 시스템 설정 → 개인 정보 보호 및 보안에서 허용하거나 우클릭 → 열기로 실행하세요.
+> **Note:** This app is not notarized by Apple. You may need to allow it in  
+> System Settings → Privacy & Security after seeing the Gatekeeper warning.
 
-### 첫 실행 설정
+### First-time Setup
 
-1. 메뉴바의 🎙 아이콘 클릭 → **Settings...**
-2. OpenAI API Key 입력 후 Save
-3. **시스템 설정 → 개인 정보 보호 및 보안 → 화면 기록**에서 MeetingScribe 허용
+1. Click the 🎙 icon in the menu bar → **Settings...**
+2. Enter your OpenAI API Key and click Save
+3. Go to System Settings → Privacy & Security → Screen Recording and enable MeetingScribe
 
-## 사용 방법
+## Usage
 
-| 동작 | 설명 |
-|------|------|
-| 🎙 클릭 → Start Recording | 미팅 녹음 시작 |
-| ⏺ 빨간 아이콘 클릭 | 녹음 종료 + 노트 생성 시작 |
-| ⏳ 아이콘 | AI가 노트 생성 중 |
-| 완료 알림 클릭 | 생성된 노트 확인 |
+| Action | Description |
+|--------|-------------|
+| Click 🎙 → Start Recording | Start capturing meeting audio |
+| Click the red ⏺ icon | Stop recording and generate notes |
+| ⏳ icon | AI is generating your notes |
+| Completion notification | Click to view the finished notes |
 
-## 기술 스택
+## Tech Stack
 
-| 영역 | 기술 |
-|------|------|
+| Layer | Technology |
+|-------|------------|
 | UI | SwiftUI (macOS 14+) |
-| 오디오 캡처 | ScreenCaptureKit |
-| 오디오 변환 | AVFoundation |
-| 전사 | OpenAI gpt-4o-transcribe |
-| 노트 생성 | OpenAI gpt-5.5 |
-| 저장 | 로컬 JSON (`~/Library/Application Support/MeetingScribe`) |
-| API 키 | macOS Keychain |
+| Audio capture | ScreenCaptureKit |
+| Audio encoding | AVFoundation |
+| Transcription | OpenAI gpt-4o-transcribe |
+| Note generation | OpenAI gpt-5.5 |
+| Storage | Local JSON (`~/Library/Application Support/MeetingScribe`) |
+| API key | macOS Keychain |
 
-## 빌드 방법
+## Building from Source
 
 ```bash
-# 의존성: xcodegen
+# Requires xcodegen
 brew install xcodegen
 
-git clone https://github.com/trustspirit/MeetingScribe
-cd MeetingScribe
+git clone https://github.com/trustspirit/notability
+cd notability
 xcodegen generate
 open MeetingScribe.xcodeproj
 ```
 
-## 프라이버시
+## Privacy
 
-- 모든 오디오 데이터는 OpenAI API로 전송됩니다 (OpenAI Privacy Policy 적용)
-- 미팅 노트는 로컬 기기에만 저장됩니다
-- API 키는 macOS Keychain에 안전하게 저장됩니다
+- Audio is sent to the OpenAI API for transcription (subject to OpenAI's Privacy Policy)
+- Meeting notes are stored locally on your device only
+- Your API key is stored securely in the macOS Keychain
 
-## 라이선스
+## License
 
 MIT
