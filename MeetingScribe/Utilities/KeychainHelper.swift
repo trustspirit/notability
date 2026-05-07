@@ -2,11 +2,14 @@ import Foundation
 import Security
 
 enum KeychainHelper {
+    private static let service = "com.meetingscribe.app"
+
     static func save(_ value: String, forKey key: String) {
         guard let data = value.data(using: .utf8) else { return }
-        delete(key: key)
+        delete(forKey: key)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data
         ]
@@ -16,6 +19,7 @@ enum KeychainHelper {
     static func load(forKey key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
@@ -26,9 +30,10 @@ enum KeychainHelper {
         return String(data: data, encoding: .utf8)
     }
 
-    static func delete(key: String) {
+    static func delete(forKey key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
         SecItemDelete(query as CFDictionary)

@@ -5,7 +5,7 @@ final class KeychainHelperTests: XCTestCase {
     let testKey = "com.meetingscribe.test.apikey.\(UUID().uuidString)"
 
     override func tearDown() {
-        KeychainHelper.delete(key: testKey)
+        KeychainHelper.delete(forKey: testKey)
         super.tearDown()
     }
 
@@ -26,7 +26,7 @@ final class KeychainHelperTests: XCTestCase {
 
     func test_delete() {
         KeychainHelper.save("value", forKey: testKey)
-        KeychainHelper.delete(key: testKey)
+        KeychainHelper.delete(forKey: testKey)
         XCTAssertNil(KeychainHelper.load(forKey: testKey))
     }
 }
