@@ -17,7 +17,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
     func generateNotes(transcript: [TranscriptChunk]) async throws -> MeetingNotes {
         let fullText = transcript.map { "[\(Int($0.timestamp))s] \($0.text)" }.joined(separator: "\n")
-        let gptResponse = try await chatCompletion(systemPrompt: systemPrompt, userContent: fullText)
+        let gptResponse = try await chatCompletion(systemPrompt: Self.systemPrompt, userContent: fullText)
         return try parseNotes(from: gptResponse)
     }
 
