@@ -34,7 +34,9 @@ struct MeetingSidebarView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    if case .idle = coordinator.state {
+                    switch coordinator.state {
+                    case .idle, .done, .failed:
+                        coordinator.state = .idle
                         Task {
                             do {
                                 try await coordinator.startRecording()
@@ -42,21 +44,25 @@ struct MeetingSidebarView: View {
                                 await MainActor.run { showCaptureError(error) }
                             }
                         }
-                    } else if case .recording = coordinator.state {
+                    case .recording:
                         Task { await coordinator.stopRecording() }
+                    case .processing:
+                        break
                     }
                 } label: {
                     switch coordinator.state {
-                    case .idle:
+                    case .idle, .done, .failed:
                         Label("Record", systemImage: "mic.circle.fill")
                     case .recording:
                         Label("Stop", systemImage: "stop.circle.fill").foregroundStyle(.red)
                     case .processing:
                         Label("Processing", systemImage: "hourglass")
-                    default:
-                        Label("Record", systemImage: "mic.circle.fill")
                     }
                 }
+                .disabled({
+                    if case .processing = coordinator.state { return true }
+                    return false
+                }())
             }
         }
     }
