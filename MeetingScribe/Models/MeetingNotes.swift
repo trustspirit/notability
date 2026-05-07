@@ -7,7 +7,7 @@ struct MeetingNotes: Codable, Equatable {
 }
 
 struct ActionItem: Codable, Equatable, Identifiable {
-    var id: UUID
+    let id: UUID
     var description: String
     var assignee: String?
     var dueDate: String?
