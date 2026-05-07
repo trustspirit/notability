@@ -8,10 +8,12 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
     }
 
     private let apiKey: String
+    private let model: String
     private let httpClient: HTTPClient
 
-    init(apiKey: String, httpClient: HTTPClient = URLSession.shared) {
+    init(apiKey: String, model: String = "gpt-5.5", httpClient: HTTPClient = URLSession.shared) {
         self.apiKey = apiKey
+        self.model = model
         self.httpClient = httpClient
     }
 
@@ -23,7 +25,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
     private func chatCompletion(systemPrompt: String, userContent: String) async throws -> String {
         let body: [String: Any] = [
-            "model": "gpt-5.5",
+            "model": model,
             "response_format": ["type": "json_object"],
             "messages": [
                 ["role": "system", "content": systemPrompt],

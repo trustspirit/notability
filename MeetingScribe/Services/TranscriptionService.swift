@@ -7,10 +7,12 @@ final class TranscriptionService: TranscriptionServiceProtocol {
     }
 
     private let apiKey: String
+    private let model: String
     private let httpClient: HTTPClient
 
-    init(apiKey: String, httpClient: HTTPClient = URLSession.shared) {
+    init(apiKey: String, model: String = "gpt-4o-transcribe", httpClient: HTTPClient = URLSession.shared) {
         self.apiKey = apiKey
+        self.model = model
         self.httpClient = httpClient
     }
 
@@ -36,7 +38,7 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         var body = Data()
         let CRLF = "\r\n"
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"model\"\(CRLF)\(CRLF)gpt-4o-transcribe\(CRLF)".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"model\"\(CRLF)\(CRLF)\(model)\(CRLF)".data(using: .utf8)!)
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"response_format\"\(CRLF)\(CRLF)text\(CRLF)".data(using: .utf8)!)
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)

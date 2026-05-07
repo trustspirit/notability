@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var apiKey: String = ""
     @State private var showKey = false
     @State private var saved = false
+    @ObservedObject private var modelSettings = ModelSettings.shared
 
     private let keychainKey = "com.meetingscribe.openai-api-key"
 
@@ -22,6 +23,15 @@ struct SettingsView: View {
                 Text("Your key is stored securely in the macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Models") {
+                Picker("Transcription", selection: $modelSettings.transcriptionModel) {
+                    ForEach(ModelSettings.transcriptionModels, id: \.self) { Text($0) }
+                }
+                Picker("Note Generation", selection: $modelSettings.noteModel) {
+                    ForEach(ModelSettings.noteModels, id: \.self) { Text($0) }
+                }
             }
 
             Section {
@@ -46,7 +56,6 @@ struct SettingsView: View {
             apiKey = KeychainHelper.load(forKey: keychainKey) ?? ""
         }
         .onDisappear {
-            // Refresh services so the new API key takes effect immediately
             if let delegate = NSApp.delegate as? AppDelegate {
                 delegate.refreshServicesWithCurrentKey()
             }
