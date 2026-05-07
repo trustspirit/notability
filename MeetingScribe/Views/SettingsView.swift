@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -43,6 +44,12 @@ struct SettingsView: View {
         .frame(width: 400)
         .onAppear {
             apiKey = KeychainHelper.load(forKey: keychainKey) ?? ""
+        }
+        .onDisappear {
+            // Refresh services so the new API key takes effect immediately
+            if let delegate = NSApp.delegate as? AppDelegate {
+                delegate.refreshServicesWithCurrentKey()
+            }
         }
     }
 }

@@ -139,4 +139,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
+
+    func refreshServicesWithCurrentKey() {
+        guard case .idle = coordinator.state else { return }  // don't refresh mid-recording
+        let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key") ?? ""
+        let capture = AudioCaptureService()
+        let transcription = TranscriptionService(apiKey: apiKey)
+        let noteGen = NoteGenerationService(apiKey: apiKey)
+        coordinator = RecordingCoordinator(audioCapture: capture, transcription: transcription, noteGeneration: noteGen, store: store)
+        observeCoordinatorState()
+    }
 }
