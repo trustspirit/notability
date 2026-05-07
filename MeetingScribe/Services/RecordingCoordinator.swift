@@ -16,6 +16,12 @@ final class RecordingCoordinator: ObservableObject {
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
 
+    private static let titleFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+
     init(
         audioCapture: AudioCaptureServiceProtocol,
         transcription: TranscriptionServiceProtocol,
@@ -30,9 +36,7 @@ final class RecordingCoordinator: ObservableObject {
 
     func startRecording() async throws {
         let id = UUID()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        let title = "Meeting - \(formatter.string(from: Date()))"
+        let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
         let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
         store.save(meeting)
         currentMeetingId = id
@@ -51,12 +55,14 @@ final class RecordingCoordinator: ObservableObject {
         recordingStart = Date()
         state = .recording(elapsed: 0)
 
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let start = self.recordingStart else { return }
                 self.state = .recording(elapsed: Date().timeIntervalSince(start))
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        elapsedTimer = timer
     }
 
     func stopRecording() async {
@@ -76,7 +82,8 @@ final class RecordingCoordinator: ObservableObject {
         cancellables.removeAll()
 
         do {
-            let notes = try await noteGeneration.generateNotes(transcript: liveTranscript)
+            let validTranscript = liveTranscript.filter { $0.text != "[transcription failed]" }
+            let notes = try await noteGeneration.generateNotes(transcript: validTranscript)
             meeting.notes = notes
             store.save(meeting)
             state = .done(meetingId: id)
@@ -86,6 +93,8 @@ final class RecordingCoordinator: ObservableObject {
             store.save(meeting)
             state = .failed(error.localizedDescription)
         }
+        currentMeetingId = nil
+        recordingStart = nil
     }
 
     private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval), meetingId: UUID) async {
