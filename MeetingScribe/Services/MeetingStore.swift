@@ -17,8 +17,11 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
 
     func save(_ meeting: Meeting) {
         let fileURL = storageDirectory.appendingPathComponent("\(meeting.id.uuidString).json")
-        if let data = try? encoder.encode(meeting) {
-            try? data.write(to: fileURL)
+        do {
+            let data = try encoder.encode(meeting)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
         }
         var updated = allMeetings.filter { $0.id != meeting.id }
         updated.append(meeting)
