@@ -29,7 +29,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     }
 
     func startCapture() async throws {
-        guard stream == nil else { return }
+        // Clean up any lingering stream from a previous session
+        if let existing = stream {
+            try? await existing.stopCapture()
+            stream = nil
+        }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
