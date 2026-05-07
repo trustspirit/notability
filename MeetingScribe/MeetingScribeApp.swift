@@ -5,8 +5,7 @@ struct MeetingScribeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        Settings {
-            SettingsView()
-        }
+        // Window management is handled entirely by AppDelegate
+        Settings { EmptyView() }
     }
 }
