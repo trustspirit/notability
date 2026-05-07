@@ -101,7 +101,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startRecording() {
-        Task { try? await coordinator.startRecording() }
+        Task {
+            do {
+                try await coordinator.startRecording()
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Recording failed"
+                alert.informativeText = "Screen Recording permission may be missing.\n\nGo to System Settings → Privacy & Security → Screen Recording and enable Notability."
+                alert.addButton(withTitle: "Open System Settings")
+                alert.addButton(withTitle: "Cancel")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                }
+            }
+        }
     }
 
     @objc private func openNotes() { openMainWindow() }

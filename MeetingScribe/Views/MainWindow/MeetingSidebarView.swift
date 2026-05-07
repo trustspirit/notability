@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MeetingSidebarView: View {
     @EnvironmentObject var store: MeetingStore
@@ -21,13 +22,26 @@ struct MeetingSidebarView: View {
                 }
             }
             .padding(.vertical, 2)
+            .contextMenu {
+                Button(role: .destructive) {
+                    delete(meeting)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         }
         .navigationTitle("Meetings")
         .toolbar {
             ToolbarItem {
                 Button {
                     if case .idle = coordinator.state {
-                        Task { try? await coordinator.startRecording() }
+                        Task {
+                            do {
+                                try await coordinator.startRecording()
+                            } catch {
+                                await MainActor.run { showCaptureError(error) }
+                            }
+                        }
                     } else if case .recording = coordinator.state {
                         Task { await coordinator.stopRecording() }
                     }
@@ -44,6 +58,31 @@ struct MeetingSidebarView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func delete(_ meeting: Meeting) {
+        store.delete(id: meeting.id)
+        if selectedMeetingId == meeting.id {
+            selectedMeetingId = nil
+        }
+    }
+
+    private func showCaptureError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Recording failed"
+        if error.localizedDescription.lowercased().contains("permission") ||
+           error.localizedDescription.lowercased().contains("access") {
+            alert.informativeText = "Screen Recording permission is required.\n\nGo to System Settings → Privacy & Security → Screen Recording and enable Notability."
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            }
+        } else {
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 }
