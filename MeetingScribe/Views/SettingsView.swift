@@ -26,12 +26,16 @@ struct SettingsView: View {
             }
 
             Section("Models") {
-                Picker("Transcription", selection: $modelSettings.transcriptionModel) {
-                    ForEach(ModelSettings.transcriptionModels, id: \.self) { Text($0) }
-                }
-                Picker("Note Generation", selection: $modelSettings.noteModel) {
-                    ForEach(ModelSettings.noteModels, id: \.self) { Text($0) }
-                }
+                ModelField(
+                    label: "Transcription",
+                    value: $modelSettings.transcriptionModel,
+                    presets: ModelSettings.transcriptionModels
+                )
+                ModelField(
+                    label: "Note Generation",
+                    value: $modelSettings.noteModel,
+                    presets: ModelSettings.noteModels
+                )
             }
 
             Section {
@@ -58,6 +62,32 @@ struct SettingsView: View {
         .onDisappear {
             if let delegate = NSApp.delegate as? AppDelegate {
                 delegate.refreshServicesWithCurrentKey()
+            }
+        }
+    }
+}
+
+private struct ModelField: View {
+    let label: String
+    @Binding var value: String
+    let presets: [String]
+
+    var body: some View {
+        LabeledContent(label) {
+            HStack(spacing: 4) {
+                TextField("model name", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                Menu {
+                    ForEach(presets, id: \.self) { preset in
+                        Button(preset) { value = preset }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
+                        .imageScale(.small)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Choose a preset")
             }
         }
     }
