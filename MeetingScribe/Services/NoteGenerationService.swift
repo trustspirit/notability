@@ -80,13 +80,11 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         let due_date: String?
     }
 
-    private var systemPrompt: String {
-        """
+    private static let systemPrompt = """
         You are a meeting notes assistant. Given a meeting transcript, extract and return a JSON object with exactly these keys:
         - "summary": A 2-3 sentence paragraph summarizing the meeting.
         - "action_items": Array of objects with keys "description" (string), "assignee" (string or null), "due_date" (string or null).
         - "key_decisions": Array of strings, each a key decision made.
         Respond in the same language as the transcript. Return ONLY valid JSON.
         """
-    }
 }
