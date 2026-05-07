@@ -38,7 +38,6 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         let config = SCStreamConfiguration()
         config.capturesAudio = true
-        config.excludesCurrentProcessAudioFromMixing = true
         config.sampleRate = 16000
         config.channelCount = 1
         // Minimize video capture (audio-only focus)
@@ -71,8 +70,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
-        guard let formatDesc = sampleBuffer.formatDescription,
-              let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc) else { return }
+        guard let formatDesc = sampleBuffer.formatDescription else { return }
+        let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc)
 
         let frameCount = AVAudioFrameCount(sampleBuffer.numSamples)
         guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frameCount) else { return }
