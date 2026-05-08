@@ -65,7 +65,10 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
     var stopCalled = false
 
     func startCapture() async throws { startCalled = true }
-    func stopCapture() { stopCalled = true }
+    func stopCapture() async {
+        stopCalled = true
+        subject.send(completion: .finished)
+    }
     func emit(_ chunk: (url: URL, timestamp: TimeInterval)) { subject.send(chunk) }
 }
 

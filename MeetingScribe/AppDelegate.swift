@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         switch state {
         case .idle:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notability")
+            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Start recording")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.contentTintColor = nil
             button.title = ""
         case .done, .failed:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notability")
+            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Meeting ready - click to view notes")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
@@ -85,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             break
         case .done, .failed:
             openMainWindow()
-            coordinator.state = .idle
+            coordinator.resetToIdle()
         }
     }
 

@@ -3,7 +3,7 @@ import AVFoundation
 import Combine
 
 final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStreamOutput, SCStreamDelegate {
-    private let subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
+    private var subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
     var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> {
         subject.eraseToAnyPublisher()
     }
@@ -34,6 +34,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             try? await existing.stopCapture()
             stream = nil
         }
+        // Fresh subject for each session — the previous one was completed by stopCapture().
+        subject = PassthroughSubject()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
@@ -60,16 +62,16 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         startDate = Date()
     }
 
-    func stopCapture() {
-        Task {
-            do {
-                try await stream?.stopCapture()
-            } catch {
-                print("[AudioCaptureService] Stream stop error: \(error)")
-            }
-            stream = nil
-            chunker.flush()
+    func stopCapture() async {
+        do {
+            try await stream?.stopCapture()
+        } catch {
+            print("[AudioCaptureService] Stream stop error: \(error)")
         }
+        stream = nil
+        // flush() is synchronous — final chunk is sent before completion fires.
+        chunker.flush()
+        subject.send(completion: .finished)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

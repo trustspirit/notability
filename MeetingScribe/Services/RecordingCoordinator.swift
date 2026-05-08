@@ -4,14 +4,14 @@ import UserNotifications
 
 @MainActor
 final class RecordingCoordinator: ObservableObject {
-    @Published var state: RecordingState = .idle
+    @Published private(set) var state: RecordingState = .idle
     @Published var liveTranscript: [TranscriptChunk] = []
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
     private let noteGeneration: NoteGenerationServiceProtocol
     private let store: MeetingStoreProtocol
-    private var cancellables = Set<AnyCancellable>()
+    private var chunkHandlingTask: Task<Void, Never>?
     private var currentMeetingId: UUID?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
@@ -34,20 +34,16 @@ final class RecordingCoordinator: ObservableObject {
         self.store = store
     }
 
+    func resetToIdle() {
+        state = .idle
+    }
+
     func startRecording() async throws {
         let id = UUID()
         liveTranscript = []
+        chunkHandlingTask?.cancel()
 
-        audioCapture.chunkPublisher
-            .sink { [weak self] chunk in
-                guard let self else { return }
-                Task { @MainActor in
-                    await self.handleChunk(chunk, meetingId: id)
-                }
-            }
-            .store(in: &cancellables)
-
-        // Start capture first — only save meeting if it actually succeeds
+        // Start capture first — only save meeting if it actually succeeds.
         try await audioCapture.startCapture()
 
         let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
@@ -65,12 +61,36 @@ final class RecordingCoordinator: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         elapsedTimer = timer
+
+        // Consume chunks concurrently. The group exits only after the publisher
+        // completes (signalled by stopCapture() → subject.send(completion:)),
+        // guaranteeing all in-flight transcriptions finish before stopRecording
+        // proceeds past `await chunkHandlingTask?.value`.
+        let publisher = audioCapture.chunkPublisher
+        chunkHandlingTask = Task { @MainActor [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                for await chunk in publisher.values {
+                    guard let self else { break }
+                    let meetingId = id
+                    group.addTask { [weak self] in
+                        guard let self else { return }
+                        await self.handleChunk(chunk, meetingId: meetingId)
+                    }
+                }
+            }
+        }
     }
 
     func stopRecording() async {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
-        audioCapture.stopCapture()
+
+        // stopCapture() flushes the final partial chunk (synchronously) then
+        // sends .finished on the publisher, causing the for-await loop in
+        // chunkHandlingTask to exit after all in-flight Tasks complete.
+        await audioCapture.stopCapture()
+        await chunkHandlingTask?.value
+        chunkHandlingTask = nil
 
         guard let id = currentMeetingId else { return }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
@@ -81,7 +101,6 @@ final class RecordingCoordinator: ObservableObject {
         store.save(meeting)
 
         state = .processing
-        cancellables.removeAll()
 
         do {
             let validTranscript = liveTranscript.filter { $0.text != "[transcription failed]" }
@@ -103,10 +122,6 @@ final class RecordingCoordinator: ObservableObject {
         do {
             let transcriptChunk = try await transcription.transcribe(audioURL: chunk.url, timestamp: chunk.timestamp)
             liveTranscript.append(transcriptChunk)
-            if var meeting = store.fetch(id: meetingId) {
-                meeting.transcript = liveTranscript
-                store.save(meeting)
-            }
         } catch {
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed]")
             liveTranscript.append(errorChunk)

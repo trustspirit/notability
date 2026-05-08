@@ -36,7 +36,6 @@ struct MeetingSidebarView: View {
                 Button {
                     switch coordinator.state {
                     case .idle, .done, .failed:
-                        coordinator.state = .idle
                         Task {
                             do {
                                 try await coordinator.startRecording()
