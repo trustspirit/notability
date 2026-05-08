@@ -59,7 +59,6 @@ struct SettingsView: View {
         .onAppear {
             apiKey = KeychainHelper.load(forKey: keychainKey) ?? ""
         }
-        .onDisappear { }
     }
 }
 

@@ -6,11 +6,13 @@ final class ModelSettings: ObservableObject {
     static let transcriptionModels = [
         "gpt-4o-transcribe",
         "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe-diarize",
         "whisper-1"
     ]
 
     static let noteModels = [
         "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-4o",
         "gpt-4o-mini"
     ]

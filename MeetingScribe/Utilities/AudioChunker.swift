@@ -27,7 +27,7 @@ final class AudioChunker {
     }
 
     func flush() {
-        queue.async { [self] in
+        queue.sync { [self] in
             _flush()
         }
     }

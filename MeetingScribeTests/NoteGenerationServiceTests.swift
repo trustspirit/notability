@@ -2,6 +2,16 @@ import XCTest
 @testable import MeetingScribe
 
 final class NoteGenerationServiceTests: XCTestCase {
+    private let keychainKey = "com.meetingscribe.openai-api-key"
+
+    override func setUp() async throws {
+        KeychainHelper.save("sk-test", forKey: keychainKey)
+    }
+
+    override func tearDown() async throws {
+        KeychainHelper.delete(forKey: keychainKey)
+    }
+
     func test_generates_notes_from_transcript() async throws {
         let json = """
         {
@@ -13,7 +23,7 @@ final class NoteGenerationServiceTests: XCTestCase {
         }
         """
         let client = MockHTTPClient(responseData: json.data(using: .utf8)!, statusCode: 200)
-        let sut = NoteGenerationService(apiKey: "sk-test", httpClient: client)
+        let sut = NoteGenerationService(httpClient: client)
 
         let transcript = [TranscriptChunk(timestamp: 0, text: "Let's discuss Q2.")]
         let notes = try await sut.generateNotes(transcript: transcript)
@@ -26,7 +36,7 @@ final class NoteGenerationServiceTests: XCTestCase {
 
     func test_throws_on_invalid_json() async throws {
         let client = MockHTTPClient(responseData: "not json".data(using: .utf8)!, statusCode: 200)
-        let sut = NoteGenerationService(apiKey: "sk-test", httpClient: client)
+        let sut = NoteGenerationService(httpClient: client)
 
         do {
             _ = try await sut.generateNotes(transcript: [])

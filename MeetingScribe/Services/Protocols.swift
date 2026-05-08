@@ -12,7 +12,7 @@ protocol MeetingStoreProtocol {
 protocol AudioCaptureServiceProtocol {
     var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> { get }
     func startCapture() async throws
-    func stopCapture()
+    func stopCapture() async
 }
 
 protocol TranscriptionServiceProtocol {
