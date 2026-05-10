@@ -50,8 +50,19 @@ final class AudioChunker {
         _emitChunk()
     }
 
+    // RMS threshold below which a chunk is considered silent and skipped.
+    // 0.004 ≈ -48 dBFS — low enough to catch real speech, high enough to drop
+    // background hiss that would otherwise trigger whisper hallucinations.
+    private static let silenceThreshold: Float = 0.004
+
     private func _emitChunk() {
         guard !accumulatedBuffers.isEmpty else { return }
+        guard rms() > Self.silenceThreshold else {
+            accumulatedBuffers = []
+            accumulatedFrames = 0
+            isFirstBuffer = true
+            return
+        }
         let url = outputDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         do {
             let file = try AVAudioFile(forWriting: url, settings: format.settings,
@@ -71,5 +82,19 @@ final class AudioChunker {
         accumulatedFrames = 0
         isFirstBuffer = true
         onChunk?(url, ts)
+    }
+
+    private func rms() -> Float {
+        var sum: Float = 0
+        var count: AVAudioFrameCount = 0
+        for buf in accumulatedBuffers {
+            guard let data = buf.int16ChannelData?[0] else { continue }
+            for i in 0..<Int(buf.frameLength) {
+                let s = Float(data[i]) / 32_768.0
+                sum += s * s
+            }
+            count += buf.frameLength
+        }
+        return count > 0 ? sqrt(sum / Float(count)) : 0
     }
 }

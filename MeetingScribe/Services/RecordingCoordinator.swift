@@ -121,6 +121,7 @@ final class RecordingCoordinator: ObservableObject {
     private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval), meetingId: UUID) async {
         do {
             let transcriptChunk = try await transcription.transcribe(audioURL: chunk.url, timestamp: chunk.timestamp)
+            guard !transcriptChunk.text.isEmpty else { return }
             liveTranscript.append(transcriptChunk)
         } catch {
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed]")
