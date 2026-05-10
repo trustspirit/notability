@@ -36,7 +36,13 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         }
         // Fresh subject for each session — the previous one was completed by stopCapture().
         subject = PassthroughSubject()
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        } catch {
+            print("[AudioCaptureService] SCShareableContent failed: \(error)")
+            throw CaptureError.permissionDenied
+        }
         guard let display = content.displays.first else {
             throw CaptureError.noDisplay
         }
@@ -60,7 +66,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             try await stream?.startCapture()
         } catch {
             stream = nil
-            throw error
+            print("[AudioCaptureService] startCapture failed: \(error)")
+            throw CaptureError.streamFailed(error)
         }
         startDate = Date()
     }
@@ -112,5 +119,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
 
     enum CaptureError: Error {
         case noDisplay
+        case permissionDenied
+        case streamFailed(Error)
     }
 }

@@ -112,8 +112,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await coordinator.startRecording()
             } catch {
-                showRecordingPermissionAlert()
+                showRecordingError(error)
             }
+        }
+    }
+
+    func showRecordingError(_ error: Error) {
+        if case AudioCaptureService.CaptureError.permissionDenied = error {
+            showRecordingPermissionAlert()
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Recording Failed"
+            alert.informativeText = "Could not start audio capture.\n\n\(error.localizedDescription)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 

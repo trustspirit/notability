@@ -74,22 +74,6 @@ struct MeetingSidebarView: View {
     }
 
     private func showCaptureError(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording Required"
-        alert.informativeText = "Go to System Settings → Privacy & Security → Screen Recording and enable Notability.\n\nAfter enabling, you must relaunch the app for the change to take effect."
-        alert.addButton(withTitle: "Open Settings & Relaunch")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-            relaunch()
-        }
-    }
-
-    private func relaunch() {
-        let task = Process()
-        task.launchPath = "/usr/bin/open"
-        task.arguments = ["-n", Bundle.main.bundleURL.path]
-        try? task.run()
-        NSApp.terminate(nil)
+        (NSApp.delegate as? AppDelegate)?.showRecordingError(error)
     }
 }
