@@ -32,8 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         requestNotificationPermission()
         observeCoordinatorState()
-        checkScreenRecordingPermission()
-        checkMicrophonePermission()
+        // Skip permission UI when launched as XCTest host
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            Task { @MainActor in
+                self.checkScreenRecordingPermission()
+                self.checkMicrophonePermission()
+            }
+        }
     }
 
     private func observeCoordinatorState() {
@@ -127,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showRecordingPermissionAlert() {
+    func showRecordingPermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Screen Recording Required"
         alert.informativeText = "Go to System Settings → Privacy & Security → Screen Recording and enable Notability.\n\nAfter enabling, you must relaunch the app for the change to take effect."
@@ -140,11 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkMicrophonePermission() {
+        // captureMicrophone requires macOS 15+; no point requesting the permission on 14
+        guard #available(macOS 15.0, *) else { return }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             break
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }  // system dialog; result handled on next launch
         case .denied, .restricted:
             let alert = NSAlert()
             alert.messageText = "Microphone Access Required"

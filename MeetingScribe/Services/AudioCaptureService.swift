@@ -99,7 +99,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             outStatus.pointee = .haveData
             return srcBuffer
         }
-        if error == nil {
+        if error == nil, dstBuffer.frameLength > 0 {
             let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
             chunker.append(dstBuffer, timestamp: elapsed)
         }
@@ -107,6 +107,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         chunker.flush()
+        subject.send(completion: .finished)
     }
 
     enum CaptureError: Error {

@@ -31,7 +31,11 @@ final class RecordingCoordinatorTests: XCTestCase {
         let (sut, capture, _, _) = makeSUT()
         try await sut.startRecording()
 
-        // Simulate a chunk being emitted
+        // chunkHandlingTask is a detached Task — yield so it starts and reaches
+        // the `for await` subscription point before we emit. PassthroughSubject
+        // drops values that arrive before any subscriber is listening.
+        await Task.yield()
+
         let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try Data().write(to: tempWAV)
         capture.emit((url: tempWAV, timestamp: 0))

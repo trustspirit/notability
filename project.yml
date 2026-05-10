@@ -23,6 +23,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: MeetingScribe/MeetingScribe.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.notability.app
         PRODUCT_NAME: Notability
+        PRODUCT_MODULE_NAME: MeetingScribe
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - sdk: ScreenCaptureKit.framework
@@ -38,6 +39,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.meetingscribe.tests
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MeetingScribe.app/Contents/MacOS/MeetingScribe"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Notability.app/Contents/MacOS/Notability"
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  MeetingScribe:
+    build:
+      targets:
+        MeetingScribe: all
+        MeetingScribeTests: [test]
+    test:
+      targets:
+        - MeetingScribeTests
+      config: Debug
