@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import UserNotifications
-import CoreGraphics
 import AVFoundation
 
 @MainActor
@@ -32,12 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         requestNotificationPermission()
         observeCoordinatorState()
-        // Skip permission UI when launched as XCTest host
+        // Request mic permission silently on first launch (system dialog, non-blocking).
+        // Screen Recording is checked lazily — only when recording fails — to avoid
+        // false positives from CGPreflightScreenCaptureAccess on ad-hoc builds.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            Task { @MainActor in
-                self.checkScreenRecordingPermission()
-                self.checkMicrophonePermission()
-            }
+            checkMicrophonePermission()
         }
     }
 
@@ -119,23 +117,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func checkScreenRecordingPermission() {
-        guard !CGPreflightScreenCaptureAccess() else { return }
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "Notability needs Screen Recording access to capture meeting audio.\n\nClick \"Open Settings\" to grant access, then relaunch the app."
-        alert.addButton(withTitle: "Open Settings & Quit")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn {
-            CGRequestScreenCaptureAccess()
-            NSApp.terminate(nil)
-        }
-    }
-
     func showRecordingPermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Screen Recording Required"
-        alert.informativeText = "Go to System Settings → Privacy & Security → Screen Recording and enable Notability.\n\nAfter enabling, you must relaunch the app for the change to take effect."
+        // On ad-hoc builds the binary hash changes with each update, so macOS
+        // may show the app as enabled in Settings but still deny access.
+        // Toggling the switch OFF → ON re-associates the permission with the
+        // current binary and resolves the issue.
+        alert.informativeText = """
+            Notability needs Screen Recording access to capture audio.
+
+            In System Settings → Privacy & Security → Screen Recording:
+            • If Notability is not listed → add it, then relaunch
+            • If it is already enabled → toggle OFF, then ON, then relaunch
+            """
         alert.addButton(withTitle: "Open Settings & Relaunch")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
