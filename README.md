@@ -25,18 +25,24 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 
 ### Download
 
-1. Download `MeetingScribe.zip` from the [Releases](../../releases/latest) page
-2. Unzip and move `MeetingScribe.app` to `/Applications`
-3. On first launch, **right-click → Open** to bypass Gatekeeper
+1. Download `Notability.zip` from the [Releases](../../releases/latest) page
+2. Unzip and move `Notability.app` to `/Applications`
+3. Run this command in Terminal to remove the quarantine flag:
+   ```bash
+   xattr -cr /Applications/Notability.app
+   ```
+4. Open `Notability.app`
 
-> **Note:** This app is not notarized by Apple. You may need to allow it in  
-> System Settings → Privacy & Security after seeing the Gatekeeper warning.
+> **Note:** This app is not notarized by Apple. macOS will show "damaged and can't be opened"
+> if you skip step 3 — this is a Gatekeeper false positive, not an actual corruption.
 
 ### First-time Setup
 
-1. Click the 🎙 icon in the menu bar → **Settings...**
+1. Click the mic icon in the menu bar → **Settings...**
 2. Enter your OpenAI API Key and click Save
-3. Go to System Settings → Privacy & Security → Screen Recording and enable MeetingScribe
+3. When prompted for Screen Recording access, click **"Open Settings & Quit"**
+4. Enable Notability in System Settings → Privacy & Security → Screen Recording
+5. Relaunch the app — it will open automatically
 
 ## Usage
 
