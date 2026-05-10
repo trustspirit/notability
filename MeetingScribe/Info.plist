@@ -13,5 +13,7 @@
     <key>LSUIElement</key><true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Notability captures system audio to transcribe your meetings.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Notability captures your microphone so your voice is included in the transcript.</string>
 </dict>
 </plist>

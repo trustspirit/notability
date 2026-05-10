@@ -46,6 +46,9 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         config.capturesAudio = true
         config.sampleRate = 16000
         config.channelCount = 1
+        if #available(macOS 15.0, *) {
+            config.captureMicrophone = true
+        }
         // Minimize video capture (audio-only focus)
         config.width = 2
         config.height = 2

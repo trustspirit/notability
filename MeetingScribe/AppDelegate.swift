@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UserNotifications
 import CoreGraphics
+import AVFoundation
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestNotificationPermission()
         observeCoordinatorState()
         checkScreenRecordingPermission()
+        checkMicrophonePermission()
     }
 
     private func observeCoordinatorState() {
@@ -134,6 +136,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
             relaunch()
+        }
+    }
+
+    private func checkMicrophonePermission() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        case .denied, .restricted:
+            let alert = NSAlert()
+            alert.messageText = "Microphone Access Required"
+            alert.informativeText = "Notability needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable Notability, then relaunch."
+            alert.addButton(withTitle: "Open Settings & Relaunch")
+            alert.addButton(withTitle: "Later")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                relaunch()
+            }
+        @unknown default:
+            break
         }
     }
 
