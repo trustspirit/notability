@@ -85,9 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleStatusBarClick() {
         switch coordinator.state {
         case .idle:
-            showMenu()
+            showIdleMenu()
         case .recording:
-            Task { await coordinator.stopRecording() }
+            showRecordingMenu()
         case .processing:
             break
         case .done, .failed:
@@ -96,12 +96,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showMenu() {
+    private func showIdleMenu() {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Start Recording", action: #selector(startRecording), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Notes", action: #selector(openNotes), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        statusItem.popUpMenu(menu)
+    }
+
+    private func showRecordingMenu() {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Stop Recording", action: #selector(stopRecording), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Open Notes", action: #selector(openNotes), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.popUpMenu(menu)
@@ -115,6 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 showRecordingError(error)
             }
         }
+    }
+
+    @objc private func stopRecording() {
+        Task { await coordinator.stopRecording() }
     }
 
     func showRecordingError(_ error: Error) {
