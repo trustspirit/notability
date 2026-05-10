@@ -1,10 +1,21 @@
 import Foundation
 
 final class TranscriptionService: TranscriptionServiceProtocol {
-    enum APIError: Error {
+    enum APIError: Error, LocalizedError {
         case httpError(Int)
         case invalidResponse
         case missingAPIKey
+
+        var errorDescription: String? {
+            switch self {
+            case .missingAPIKey:
+                return "OpenAI API key is not set. Go to Settings and enter your API key."
+            case .httpError(let code):
+                return "OpenAI API returned HTTP \(code). Check your API key and quota."
+            case .invalidResponse:
+                return "Received an unexpected response from OpenAI."
+            }
+        }
     }
 
     private let httpClient: HTTPClient
