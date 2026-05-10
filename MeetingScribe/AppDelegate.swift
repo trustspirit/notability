@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import CoreGraphics
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         requestNotificationPermission()
         observeCoordinatorState()
+        checkScreenRecordingPermission()
     }
 
     private func observeCoordinatorState() {
@@ -105,16 +107,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await coordinator.startRecording()
             } catch {
-                let alert = NSAlert()
-                alert.messageText = "Recording failed"
-                alert.informativeText = "Screen Recording permission may be missing.\n\nGo to System Settings → Privacy & Security → Screen Recording and enable Notability."
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Cancel")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                }
+                showRecordingPermissionAlert()
             }
         }
+    }
+
+    private func checkScreenRecordingPermission() {
+        guard !CGPreflightScreenCaptureAccess() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording Permission Required"
+        alert.informativeText = "Notability needs Screen Recording access to capture meeting audio.\n\nClick \"Open Settings\" to grant access, then relaunch the app."
+        alert.addButton(withTitle: "Open Settings & Quit")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            CGRequestScreenCaptureAccess()
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func showRecordingPermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording Required"
+        alert.informativeText = "Go to System Settings → Privacy & Security → Screen Recording and enable Notability.\n\nAfter enabling, you must relaunch the app for the change to take effect."
+        alert.addButton(withTitle: "Open Settings & Relaunch")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            relaunch()
+        }
+    }
+
+    private func relaunch() {
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-n", Bundle.main.bundleURL.path]
+        try? task.run()
+        NSApp.terminate(nil)
     }
 
     @objc private func openNotes() { openMainWindow() }
