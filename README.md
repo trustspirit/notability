@@ -8,7 +8,7 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 ## Features
 
 - **System audio capture** — Uses ScreenCaptureKit to record any app's audio without extra drivers
-- **Real-time transcription** — Sends 30-second chunks to OpenAI `gpt-4o-transcribe` and shows the live transcript during the meeting
+- **Real-time transcription** — Sends audio chunks to OpenAI through either the Audio API (`gpt-4o-transcribe`) or Realtime API (`gpt-realtime-whisper`) and shows the live transcript during the meeting
 - **AI-generated notes** — After the meeting ends, `gpt-5.5` automatically produces:
   - **Summary** — 2–3 sentence overview
   - **Action Items** — with assignee and due date
@@ -60,7 +60,7 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 | UI | SwiftUI (macOS 14+) |
 | Audio capture | ScreenCaptureKit |
 | Audio encoding | AVFoundation |
-| Transcription | OpenAI gpt-4o-transcribe |
+| Transcription | OpenAI Audio API (`gpt-4o-transcribe`) or Realtime API (`gpt-realtime-whisper`) |
 | Note generation | OpenAI gpt-5.5 |
 | Storage | Local JSON (`~/Library/Application Support/MeetingScribe`) |
 | API key | macOS Keychain |

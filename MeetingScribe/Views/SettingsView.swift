@@ -27,10 +27,17 @@ struct SettingsView: View {
             }
 
             Section("Models") {
+                Picker("Transcription Method", selection: $modelSettings.transcriptionProvider) {
+                    ForEach(ModelSettings.TranscriptionProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 ModelField(
                     label: "Transcription",
                     value: $modelSettings.transcriptionModel,
-                    presets: ModelSettings.transcriptionModels
+                    presets: modelSettings.transcriptionProvider.models
                 )
                 ModelField(
                     label: "Note Generation",
@@ -43,6 +50,9 @@ struct SettingsView: View {
                     presets: ["ko", "en", "ja", "zh", ""]
                 )
                 Text("Language: BCP-47 code sent to Whisper (e.g. ko, en, ja). Empty = auto-detect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(transcriptionMethodDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Model selections are saved automatically.")
@@ -83,6 +93,15 @@ struct SettingsView: View {
             let stored = KeychainHelper.load(forKey: keychainKey) ?? ""
             apiKey = stored
             keyIsSaved = !stored.isEmpty
+        }
+    }
+
+    private var transcriptionMethodDescription: String {
+        switch modelSettings.transcriptionProvider {
+        case .audioAPI:
+            return "Audio API uses the existing request/response transcription flow for recorded chunks."
+        case .realtimeAPI:
+            return "Realtime API streams each captured chunk through gpt-realtime-whisper."
         }
     }
 }

@@ -4,6 +4,7 @@ import Foundation
 final class MockHTTPClient: HTTPClient {
     let responseData: Data
     let statusCode: Int
+    private(set) var requests: [URLRequest] = []
 
     init(responseData: Data, statusCode: Int) {
         self.responseData = responseData
@@ -11,6 +12,7 @@ final class MockHTTPClient: HTTPClient {
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requests.append(request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: statusCode,
