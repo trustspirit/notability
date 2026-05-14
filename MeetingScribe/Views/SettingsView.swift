@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var apiKey: String = ""
     @State private var showKey = false
     @State private var saved = false
+    @State private var keyIsSaved = false
     @ObservedObject private var modelSettings = ModelSettings.shared
 
     private let keychainKey = "com.meetingscribe.openai-api-key"
@@ -36,16 +37,30 @@ struct SettingsView: View {
                     value: $modelSettings.noteModel,
                     presets: ModelSettings.noteModels
                 )
+                Text("Model selections are saved automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
-                Button("Save") {
-                    KeychainHelper.save(apiKey, forKey: keychainKey)
-                    saved = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
+                HStack {
+                    Button("Save") {
+                        KeychainHelper.save(apiKey, forKey: keychainKey)
+                        keyIsSaved = true
+                        saved = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(apiKey.isEmpty)
+
+                    if keyIsSaved {
+                        Button("Remove Key", role: .destructive) {
+                            KeychainHelper.delete(forKey: keychainKey)
+                            apiKey = ""
+                            keyIsSaved = false
+                        }
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(apiKey.isEmpty)
 
                 if saved {
                     Label("Saved!", systemImage: "checkmark.circle.fill")
@@ -57,7 +72,9 @@ struct SettingsView: View {
         .padding()
         .frame(width: 400)
         .onAppear {
-            apiKey = KeychainHelper.load(forKey: keychainKey) ?? ""
+            let stored = KeychainHelper.load(forKey: keychainKey) ?? ""
+            apiKey = stored
+            keyIsSaved = !stored.isEmpty
         }
     }
 }

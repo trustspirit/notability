@@ -45,8 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             for await _ in self.coordinator.$state.values {
                 self.updateStatusIcon(state: self.coordinator.state)
-                if case .done = self.coordinator.state {
+                switch self.coordinator.state {
+                case .done, .failed:
                     self.openMainWindow()
+                default:
+                    break
                 }
             }
         }
@@ -72,8 +75,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
-        case .done, .failed:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Meeting ready - click to view notes")
+        case .done:
+            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notes ready")
+            button.image?.isTemplate = true
+            button.contentTintColor = nil
+            button.title = ""
+        case .failed:
+            button.image = NSImage(systemSymbolName: "exclamationmark.circle", accessibilityDescription: "Note generation failed")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.title = ""
@@ -151,10 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Toggling the switch OFF → ON re-associates the permission with the
         // current binary and resolves the issue.
         alert.informativeText = """
-            Notability needs Screen Recording access to capture audio.
+            MeetingScribe needs Screen Recording access to capture audio.
 
             In System Settings → Privacy & Security → Screen Recording:
-            • If Notability is not listed → add it, then relaunch
+            • If MeetingScribe is not listed → add it, then relaunch
             • If it is already enabled → toggle OFF, then ON, then relaunch
             """
         alert.addButton(withTitle: "Open Settings & Relaunch")
@@ -176,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .denied, .restricted:
             let alert = NSAlert()
             alert.messageText = "Microphone Access Required"
-            alert.informativeText = "Notability needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable Notability, then relaunch."
+            alert.informativeText = "MeetingScribe needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable MeetingScribe, then relaunch."
             alert.addButton(withTitle: "Open Settings & Relaunch")
             alert.addButton(withTitle: "Later")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -232,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Notability"
+            window.title = "MeetingScribe"
             window.contentView = NSHostingView(rootView: contentView)
             window.center()
             window.setFrameAutosaveName("MainWindow")
@@ -241,6 +249,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard case .recording = coordinator.state else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Recording in Progress"
+        alert.informativeText = "Do you want to stop recording and generate notes before quitting? This may take a moment.\n\nQuitting without saving will discard the current session."
+        alert.addButton(withTitle: "Stop & Generate Notes")
+        alert.addButton(withTitle: "Quit Without Saving")
+        alert.addButton(withTitle: "Continue Recording")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task {
+                await coordinator.stopRecording()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
     }
 
     private func requestNotificationPermission() {

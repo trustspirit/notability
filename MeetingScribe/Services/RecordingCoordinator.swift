@@ -12,7 +12,7 @@ final class RecordingCoordinator: ObservableObject {
     private let noteGeneration: NoteGenerationServiceProtocol
     private let store: MeetingStoreProtocol
     private var chunkHandlingTask: Task<Void, Never>?
-    private var currentMeetingId: UUID?
+    @Published private(set) var currentMeetingId: UUID?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
 
@@ -71,10 +71,9 @@ final class RecordingCoordinator: ObservableObject {
             await withTaskGroup(of: Void.self) { group in
                 for await chunk in publisher.values {
                     guard let self else { break }
-                    let meetingId = id
                     group.addTask { [weak self] in
                         guard let self else { return }
-                        await self.handleChunk(chunk, meetingId: meetingId)
+                        await self.handleChunk(chunk)
                     }
                 }
             }
@@ -93,6 +92,10 @@ final class RecordingCoordinator: ObservableObject {
         chunkHandlingTask = nil
 
         guard let id = currentMeetingId else { return }
+        defer {
+            currentMeetingId = nil
+            recordingStart = nil
+        }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
 
         liveTranscript.sort { $0.timestamp < $1.timestamp }
@@ -105,6 +108,14 @@ final class RecordingCoordinator: ObservableObject {
 
         do {
             let validTranscript = liveTranscript.filter { $0.text != "[transcription failed]" }
+            guard !validTranscript.isEmpty else {
+                let msg = "No audio was captured or all transcription attempts failed."
+                meeting.notesGenerationError = msg
+                store.save(meeting)
+                state = .failed(msg)
+                sendFailureNotification()
+                return
+            }
             let notes = try await noteGeneration.generateNotes(transcript: validTranscript)
             meeting.notes = notes
             store.save(meeting)
@@ -114,12 +125,11 @@ final class RecordingCoordinator: ObservableObject {
             meeting.notesGenerationError = error.localizedDescription
             store.save(meeting)
             state = .failed(error.localizedDescription)
+            sendFailureNotification()
         }
-        currentMeetingId = nil
-        recordingStart = nil
     }
 
-    private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval), meetingId: UUID) async {
+    private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval)) async {
         defer { try? FileManager.default.removeItem(at: chunk.url) }
         do {
             let transcriptChunk = try await transcription.transcribe(audioURL: chunk.url, timestamp: chunk.timestamp)
@@ -135,6 +145,14 @@ final class RecordingCoordinator: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Meeting notes ready"
         content.body = "Your meeting notes have been generated."
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func sendFailureNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Note generation failed"
+        content.body = "Your meeting was saved but notes could not be generated."
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

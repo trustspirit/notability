@@ -33,6 +33,20 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         allMeetings.first { $0.id == id }
     }
 
+    func rename(id: UUID, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, var meeting = fetch(id: id) else { return }
+        meeting.title = trimmed
+        save(meeting)
+    }
+
+    func toggleActionItemCompleted(meetingId: UUID, itemId: UUID) {
+        guard var meeting = fetch(id: meetingId),
+              let idx = meeting.notes?.actionItems.firstIndex(where: { $0.id == itemId }) else { return }
+        meeting.notes?.actionItems[idx].isCompleted.toggle()
+        save(meeting)
+    }
+
     func delete(id: UUID) {
         let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
         try? FileManager.default.removeItem(at: fileURL)

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ActionItemsTabView: View {
     let items: [ActionItem]
+    let onToggle: (UUID) -> Void
 
     var body: some View {
         if items.isEmpty {
@@ -9,9 +10,14 @@ struct ActionItemsTabView: View {
         } else {
             List(items) { item in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(item.isCompleted ? .green : .secondary)
-                        .imageScale(.large)
+                    Button {
+                        onToggle(item.id)
+                    } label: {
+                        Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(item.isCompleted ? .green : .secondary)
+                            .imageScale(.large)
+                    }
+                    .buttonStyle(.plain)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.description)
