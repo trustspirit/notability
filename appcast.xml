@@ -7,14 +7,14 @@
     <link>https://github.com/trustspirit/notability</link>
     <language>en</language>
     <item>
-      <title>Version 1.2.7</title>
-      <pubDate>Thu, 14 May 2026 13:41:07 +0000</pubDate>
-      <sparkle:version>66</sparkle:version>
-      <sparkle:shortVersionString>1.2.7</sparkle:shortVersionString>
+      <title>Version 1.2.8</title>
+      <pubDate>Thu, 14 May 2026 14:03:44 +0000</pubDate>
+      <sparkle:version>68</sparkle:version>
+      <sparkle:shortVersionString>1.2.8</sparkle:shortVersionString>
       <enclosure
-          url="https://github.com/trustspirit/notability/releases/download/v1.2.7/Notability.zip"
-          sparkle:edSignature="1Ev40UFMWudK/MAGc6vbL4DmRNNfcTPm6FE1JRnroL/VFye2FzZgpkFXqe7afVL/n0wymg6XCshUJmUgzsF5DQ=="
-          length="2159517"
+          url="https://github.com/trustspirit/notability/releases/download/v1.2.8/Notability.zip"
+          sparkle:edSignature="CmUibp7BIrLtGclSobcMscoAnPEzMuueHCD2kpfjQKNApvTfvcI3a1f39ra1j7DaSoTQ4ts0ZgJNjsgEkuZJDA=="
+          length="2160985"
           type="application/octet-stream"/>
     </item>
   </channel>
