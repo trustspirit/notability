@@ -6,8 +6,11 @@ import UserNotifications
 final class RecordingCoordinator: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published var liveTranscript: [TranscriptChunk] = []
+    @Published private(set) var livePartialTranscript: TranscriptChunk?
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var systemAudioAvailable: Bool = true
+    @Published private(set) var pendingTranscriptionCount = 0
+    private var livePartialTranscriptToken: UUID?
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -47,6 +50,9 @@ final class RecordingCoordinator: ObservableObject {
     func startRecording() async throws {
         let id = UUID()
         liveTranscript = []
+        livePartialTranscript = nil
+        livePartialTranscriptToken = nil
+        pendingTranscriptionCount = 0
         lastTranscriptContext = ""
         chunkHandlingTask?.cancel()
 
@@ -145,15 +151,27 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval)) async {
-        defer { try? FileManager.default.removeItem(at: chunk.url) }
+        pendingTranscriptionCount += 1
+        let partialToken = UUID()
+        defer {
+            pendingTranscriptionCount = max(0, pendingTranscriptionCount - 1)
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
         do {
             let ctx = lastTranscriptContext
             let transcriptChunk = try await transcription.transcribe(
                 audioURL: chunk.url,
                 timestamp: chunk.timestamp,
-                prompt: ctx.isEmpty ? nil : ctx
+                prompt: ctx.isEmpty ? nil : ctx,
+                onPartialTranscript: { [weak self] partial in
+                    await self?.updateLivePartialTranscript(partial, timestamp: chunk.timestamp, token: partialToken)
+                }
             )
-            guard !transcriptChunk.text.isEmpty, Self.isMeaningfulTranscript(transcriptChunk.text) else { return }
+            guard !transcriptChunk.text.isEmpty, Self.isMeaningfulTranscript(transcriptChunk.text) else {
+                clearLivePartialTranscript(token: partialToken)
+                return
+            }
+            clearLivePartialTranscript(token: partialToken)
             liveTranscript.append(transcriptChunk)
             // Keep last ~200 chars as context for the next chunk to prevent sentence cutting.
             let allText = liveTranscript
@@ -162,8 +180,23 @@ final class RecordingCoordinator: ObservableObject {
                 .joined(separator: " ")
             lastTranscriptContext = String(allText.suffix(200))
         } catch {
+            clearLivePartialTranscript(token: partialToken)
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
             liveTranscript.append(errorChunk)
+        }
+    }
+
+    private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, Self.isMeaningfulTranscript(trimmed) else { return }
+        livePartialTranscriptToken = token
+        livePartialTranscript = TranscriptChunk(timestamp: timestamp, text: trimmed)
+    }
+
+    private func clearLivePartialTranscript(token: UUID) {
+        if livePartialTranscriptToken == token {
+            livePartialTranscriptToken = nil
+            livePartialTranscript = nil
         }
     }
 

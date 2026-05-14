@@ -42,7 +42,12 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         self.settings = settings
     }
 
-    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
+    func transcribe(
+        audioURL: URL,
+        timestamp: TimeInterval,
+        prompt: String? = nil,
+        onPartialTranscript: TranscriptionPartialHandler? = nil
+    ) async throws -> TranscriptChunk {
         guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
             throw APIError.missingAPIKey
         }
@@ -55,7 +60,8 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             apiKey: apiKey,
             model: model,
             language: language,
-            prompt: prompt
+            prompt: prompt,
+            onPartialTranscript: onPartialTranscript
         )
 
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -70,7 +76,14 @@ final class TranscriptionService: TranscriptionServiceProtocol {
 }
 
 protocol OpenAITranscriber {
-    func transcribe(audioURL: URL, apiKey: String, model: String, language: String?, prompt: String?) async throws -> String
+    func transcribe(
+        audioURL: URL,
+        apiKey: String,
+        model: String,
+        language: String?,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String
 }
 
 final class AudioAPITranscriber: OpenAITranscriber {
@@ -80,7 +93,14 @@ final class AudioAPITranscriber: OpenAITranscriber {
         self.httpClient = httpClient
     }
 
-    func transcribe(audioURL: URL, apiKey: String, model: String, language: String?, prompt: String?) async throws -> String {
+    func transcribe(
+        audioURL: URL,
+        apiKey: String,
+        model: String,
+        language: String?,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String {
         let audioData = try Data(contentsOf: audioURL)
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
@@ -143,7 +163,14 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         self.session = session
     }
 
-    func transcribe(audioURL: URL, apiKey: String, model: String, language: String?, prompt: String?) async throws -> String {
+    func transcribe(
+        audioURL: URL,
+        apiKey: String,
+        model: String,
+        language: String?,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String {
         let pcmData = try convertToRealtimePCM16(audioURL: audioURL)
         guard !pcmData.isEmpty else { return "" }
 
@@ -158,7 +185,7 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         try await sendAudio(pcmData, to: task)
         try await sendJSON(["type": "input_audio_buffer.commit"], to: task)
 
-        return try await receiveTranscript(from: task)
+        return try await receiveTranscript(from: task, onPartialTranscript: onPartialTranscript)
     }
 
     private func endpoint() -> URL {
@@ -209,9 +236,17 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         }
     }
 
-    private func receiveTranscript(from task: URLSessionWebSocketTask) async throws -> String {
+    private func receiveTranscript(
+        from task: URLSessionWebSocketTask,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String {
         try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { try await self.waitForCompletedTranscript(from: task) }
+            group.addTask {
+                try await self.waitForCompletedTranscript(
+                    from: task,
+                    onPartialTranscript: onPartialTranscript
+                )
+            }
             group.addTask {
                 try await Task.sleep(nanoseconds: self.responseTimeoutNanoseconds)
                 throw RealtimeTranscriptionError.timeout
@@ -225,7 +260,10 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         }
     }
 
-    private func waitForCompletedTranscript(from task: URLSessionWebSocketTask) async throws -> String {
+    private func waitForCompletedTranscript(
+        from task: URLSessionWebSocketTask,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String {
         var deltaFallback = ""
 
         while true {
@@ -250,7 +288,12 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
 
             switch type {
             case "conversation.item.input_audio_transcription.delta":
-                deltaFallback += event["delta"] as? String ?? ""
+                let delta = event["delta"] as? String ?? ""
+                deltaFallback += delta
+                let partial = deltaFallback.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !partial.isEmpty {
+                    await onPartialTranscript?(partial)
+                }
             case "conversation.item.input_audio_transcription.completed":
                 return event["transcript"] as? String ?? deltaFallback
             case "error":

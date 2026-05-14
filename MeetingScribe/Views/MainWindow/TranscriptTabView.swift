@@ -9,7 +9,7 @@ struct TranscriptTabView: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(chunks, id: \.timestamp) { chunk in
+                    ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
                         HStack(alignment: .top, spacing: 8) {
                             Text(formatTimestamp(chunk.timestamp))
                                 .font(.caption.monospacedDigit())

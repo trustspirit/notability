@@ -63,6 +63,47 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertFalse(sut.liveTranscript.isEmpty)
     }
 
+    func test_partial_transcript_updates_live_caption_before_final() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.partials = ["실시간 자막"]
+        transcription.delayNanoseconds = 300_000_000
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sut.livePartialTranscript?.text, "실시간 자막")
+        XCTAssertTrue(sut.liveTranscript.isEmpty)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertNil(sut.livePartialTranscript)
+        XCTAssertEqual(sut.liveTranscript.first?.text, "Mock transcription")
+    }
+
+    func test_pending_transcription_count_updates_while_chunk_is_processing() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.delayNanoseconds = 300_000_000
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sut.pendingTranscriptionCount, 1)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(sut.pendingTranscriptionCount, 0)
+    }
+
     func test_repeated_filler_transcript_is_dropped() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.text = "아. 아. 아. 아."
@@ -127,9 +168,22 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
 final class MockTranscriptionService: TranscriptionServiceProtocol {
     var text = "Mock transcription"
     var error: Error?
+    var partials: [String] = []
+    var delayNanoseconds: UInt64 = 0
 
-    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
+    func transcribe(
+        audioURL: URL,
+        timestamp: TimeInterval,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> TranscriptChunk {
         if let error { throw error }
+        for partial in partials {
+            await onPartialTranscript?(partial)
+        }
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
         return TranscriptChunk(timestamp: timestamp, text: text)
     }
 }

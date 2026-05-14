@@ -35,7 +35,7 @@ final class AudioChunkerTests: XCTestCase {
 
     // MARK: - Sentence boundary detection
 
-    // After minChunkDuration (2 s = 32000 frames) of tone followed by
+    // After minChunkDuration (0.8 s = 12800 frames) of tone followed by
     // sentenceBoundaryDuration (0.6 s = 9600 frames) of silence, the chunker
     // should emit without waiting for maxChunkDuration.
     func test_sentence_boundary_triggers_early_emit() {
@@ -44,10 +44,10 @@ final class AudioChunkerTests: XCTestCase {
         let expectation = expectation(description: "boundary chunk emitted")
         chunker.onChunk = { _, _ in expectation.fulfill() }
 
-        // 2.0 s of speech (satisfies minChunkDuration)
-        chunker.append(makeToneBuffer(sampleCount: 32000), timestamp: 0)
+        // 0.8 s of speech (satisfies minChunkDuration)
+        chunker.append(makeToneBuffer(sampleCount: 12800), timestamp: 0)
         // 0.6 s of silence (satisfies sentenceBoundaryDuration)
-        chunker.append(makeSilenceBuffer(sampleCount: 9600), timestamp: 2.0)
+        chunker.append(makeSilenceBuffer(sampleCount: 9600), timestamp: 0.8)
 
         wait(for: [expectation], timeout: 2)
     }
@@ -59,7 +59,7 @@ final class AudioChunkerTests: XCTestCase {
         let chunker = AudioChunker(outputDirectory: tempDir)
         var autoEmitted = false
 
-        // 0.5 s tone (below minChunkDuration of 2 s)
+        // 0.5 s tone (below minChunkDuration of 0.8 s)
         chunker.append(makeToneBuffer(sampleCount: 8000), timestamp: 0)
         // 1 s silence — would trigger boundary IF min duration was met
         chunker.append(makeSilenceBuffer(sampleCount: 16000), timestamp: 0.5)
@@ -98,6 +98,17 @@ final class AudioChunkerTests: XCTestCase {
 
         wait(for: [exp], timeout: 2)
         XCTAssertEqual(chunkCount, 2)
+    }
+
+    func test_default_max_duration_emits_for_live_caption_updates() throws {
+        let chunker = AudioChunker(outputDirectory: tempDir)
+        let exp = expectation(description: "default max duration emitted")
+        chunker.onChunk = { _, _ in exp.fulfill() }
+
+        // 6 seconds of continuous speech should still emit while recording.
+        chunker.append(makeToneBuffer(sampleCount: 96000), timestamp: 0)
+
+        wait(for: [exp], timeout: 2)
     }
 
     // MARK: - Silent chunk filtering

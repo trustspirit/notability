@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 
+typealias TranscriptionPartialHandler = (String) async -> Void
+
 protocol MeetingStoreProtocol {
     var allMeetings: [Meeting] { get }
     var allMeetingsPublisher: AnyPublisher<[Meeting], Never> { get }
@@ -17,7 +19,23 @@ protocol AudioCaptureServiceProtocol {
 }
 
 protocol TranscriptionServiceProtocol {
-    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String?) async throws -> TranscriptChunk
+    func transcribe(
+        audioURL: URL,
+        timestamp: TimeInterval,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> TranscriptChunk
+}
+
+extension TranscriptionServiceProtocol {
+    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
+        try await transcribe(
+            audioURL: audioURL,
+            timestamp: timestamp,
+            prompt: prompt,
+            onPartialTranscript: nil
+        )
+    }
 }
 
 protocol NoteGenerationServiceProtocol {

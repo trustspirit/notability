@@ -42,6 +42,8 @@ private struct LiveRecordingView: View {
     @EnvironmentObject var coordinator: RecordingCoordinator
 
     var body: some View {
+        let transcriptRows = visibleTranscriptRows
+
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Circle()
@@ -57,6 +59,10 @@ private struct LiveRecordingView: View {
                 Spacer()
                 if !coordinator.liveTranscript.isEmpty {
                     Text("\(coordinator.liveTranscript.filter { !isTranscriptionFailure($0.text) }.count) segments")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if coordinator.pendingTranscriptionCount > 0 {
+                    Text("Transcribing…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -88,24 +94,24 @@ private struct LiveRecordingView: View {
 
             Divider()
 
-            if coordinator.liveTranscript.isEmpty {
+            if transcriptRows.isEmpty {
                 ContentUnavailableView(
-                    "Listening…",
-                    systemImage: "waveform",
-                    description: Text("Transcript will appear as speech is detected.")
+                    coordinator.pendingTranscriptionCount > 0 ? "Transcribing…" : "Listening…",
+                    systemImage: coordinator.pendingTranscriptionCount > 0 ? "text.bubble" : "waveform",
+                    description: Text(coordinator.pendingTranscriptionCount > 0 ? "Transcript will appear when the current audio chunk finishes." : "Transcript will appear as speech is detected.")
                 )
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(coordinator.liveTranscript, id: \.timestamp) { chunk in
+                            ForEach(Array(transcriptRows.enumerated()), id: \.offset) { index, chunk in
                                 HStack(alignment: .top, spacing: 8) {
                                     Text(formatTimestamp(chunk.timestamp))
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                         .frame(width: 48, alignment: .trailing)
                                         .padding(.top, 1)
-                                    if isTranscriptionFailure(chunk.text) {
+                                    if isTranscriptionFailure(chunk.text) || isPartialRow(index, rows: transcriptRows) {
                                         Text(chunk.text)
                                             .foregroundStyle(.secondary)
                                             .italic()
@@ -115,15 +121,16 @@ private struct LiveRecordingView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }
-                                .id(chunk.timestamp)
+                                .id(index)
                             }
                         }
                         .padding()
                     }
                     .onChange(of: coordinator.liveTranscript.count) { _, _ in
-                        if let last = coordinator.liveTranscript.last {
-                            withAnimation { proxy.scrollTo(last.timestamp, anchor: .bottom) }
-                        }
+                        scrollToLast(proxy)
+                    }
+                    .onChange(of: coordinator.livePartialTranscript?.text ?? "") { _, _ in
+                        scrollToLast(proxy)
                     }
                 }
             }
@@ -143,6 +150,25 @@ private struct LiveRecordingView: View {
 
     private func isTranscriptionFailure(_ text: String) -> Bool {
         text.hasPrefix("[transcription failed")
+    }
+
+    private var visibleTranscriptRows: [TranscriptChunk] {
+        var rows = coordinator.liveTranscript
+        if let partial = coordinator.livePartialTranscript {
+            rows.append(partial)
+        }
+        return rows
+    }
+
+    private func isPartialRow(_ index: Int, rows: [TranscriptChunk]) -> Bool {
+        coordinator.livePartialTranscript != nil && index == rows.count - 1 && index >= coordinator.liveTranscript.count
+    }
+
+    private func scrollToLast(_ proxy: ScrollViewProxy) {
+        let lastIndex = visibleTranscriptRows.count - 1
+        if lastIndex >= 0 {
+            withAnimation { proxy.scrollTo(lastIndex, anchor: .bottom) }
+        }
     }
 }
 

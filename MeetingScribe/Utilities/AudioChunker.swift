@@ -15,7 +15,7 @@ final class AudioChunker {
     // Emit when silence lasts this long AND minimum chunk duration is met.
     // 0.6 s of quiet = natural sentence/breath boundary.
     private static let sentenceBoundaryDuration: Double = 0.6
-    private static let minChunkDuration: Double = 2.0   // avoid tiny fragments
+    private static let minChunkDuration: Double = 0.8   // live captions should appear quickly
 
     private static let sampleRate: Double = 16_000
 
@@ -32,7 +32,7 @@ final class AudioChunker {
     // Exposed as init parameter for testability.
     private let maxChunkDuration: Double
 
-    init(chunkDuration: Double = 30.0,
+    init(chunkDuration: Double = 6.0,
          outputDirectory: URL = FileManager.default.temporaryDirectory) {
         self.maxChunkDuration = chunkDuration
         self.outputDirectory = outputDirectory

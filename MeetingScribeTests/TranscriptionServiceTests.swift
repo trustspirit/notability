@@ -75,6 +75,30 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(realtimeAPI.calls.first?.prompt, "previous words")
     }
 
+    func test_realtime_provider_forwards_partial_transcripts() async throws {
+        ModelSettings.shared.transcriptionProvider = .realtimeAPI
+        ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
+
+        let audioAPI = MockTranscriber(text: "wrong provider")
+        let realtimeAPI = MockTranscriber(text: "Realtime transcript")
+        realtimeAPI.partials = ["실시간", "실시간 자막"]
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        var partials: [String] = []
+        let chunk = try await sut.transcribe(
+            audioURL: tempFile,
+            timestamp: 3,
+            onPartialTranscript: { partials.append($0) }
+        )
+
+        XCTAssertEqual(chunk.text, "Realtime transcript")
+        XCTAssertEqual(partials, ["실시간", "실시간 자막"])
+    }
+
     func test_realtime_model_routes_to_realtime_transcriber_even_when_provider_is_audio_api() async throws {
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
@@ -105,14 +129,25 @@ private final class MockTranscriber: OpenAITranscriber {
     }
 
     let text: String
+    var partials: [String] = []
     private(set) var calls: [Call] = []
 
     init(text: String) {
         self.text = text
     }
 
-    func transcribe(audioURL: URL, apiKey: String, model: String, language: String?, prompt: String?) async throws -> String {
+    func transcribe(
+        audioURL: URL,
+        apiKey: String,
+        model: String,
+        language: String?,
+        prompt: String?,
+        onPartialTranscript: TranscriptionPartialHandler?
+    ) async throws -> String {
         calls.append(Call(audioURL: audioURL, apiKey: apiKey, model: model, language: language, prompt: prompt))
+        for partial in partials {
+            await onPartialTranscript?(partial)
+        }
         return text
     }
 }
