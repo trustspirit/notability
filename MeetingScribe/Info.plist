@@ -14,7 +14,7 @@
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/trustspirit/notability/main/appcast.xml</string>
     <key>SUPublicEDKey</key>
-    <string>SPARKLE_PUBLIC_KEY_PLACEHOLDER</string>
+    <string>oGlh6Tn6YP/A9fkip2t5Et9cSAoxcVa1JDL10tUNsyI=</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Notability captures system audio to transcribe your meetings.</string>
     <key>NSMicrophoneUsageDescription</key>
