@@ -87,6 +87,52 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(sut.liveTranscript[1].text, "다음 문장입니다.")
     }
 
+    func test_continuous_long_sentence_merges_across_multiple_live_chunks() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "제가 만 원에 샀어요",
+            "만오천원이 됐어요",
+            "그럼 이제 추적 손절매 가격이",
+            "한 만삼천오백원 됐을 거 아니에요."
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 6)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 12)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 18)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 1)
+        XCTAssertEqual(
+            sut.liveTranscript.first?.text,
+            "제가 만 원에 샀어요 만오천원이 됐어요 그럼 이제 추적 손절매 가격이 한 만삼천오백원 됐을 거 아니에요."
+        )
+    }
+
+    func test_unpunctuated_chunks_do_not_merge_after_long_timestamp_gap() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "첫 번째 주제 이야기",
+            "두 번째 주제 이야기"
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 20)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 2)
+        XCTAssertEqual(sut.liveTranscript[0].text, "첫 번째 주제 이야기")
+        XCTAssertEqual(sut.liveTranscript[1].text, "두 번째 주제 이야기")
+    }
+
     func test_live_partial_merges_with_previous_unfinished_sentence_for_display() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.text = "제가 만약에"
