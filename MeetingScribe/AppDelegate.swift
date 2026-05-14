@@ -182,8 +182,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkMicrophonePermission() {
-        // captureMicrophone requires macOS 15+; no point requesting the permission on 14
-        guard #available(macOS 15.0, *) else { return }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             break

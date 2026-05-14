@@ -152,7 +152,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
+          # Stash the generated appcast.xml before switching branches so that
+          # git checkout main cannot overwrite it with the old committed version.
+          cp appcast.xml /tmp/appcast_generated.xml
           git checkout main
+          cp /tmp/appcast_generated.xml appcast.xml
           git add appcast.xml
           git diff --staged --quiet || git commit -m "chore: update appcast.xml for ${TAG}
 

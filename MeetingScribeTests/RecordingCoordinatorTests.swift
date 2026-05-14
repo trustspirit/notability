@@ -15,9 +15,26 @@ final class RecordingCoordinatorTests: XCTestCase {
         }
     }
 
-    func test_stop_transitions_to_processing_then_done() async throws {
-        let (sut, _, _, store) = makeSUT()
+    func test_stop_with_no_audio_transitions_to_failed() async throws {
+        let (sut, _, _, _) = makeSUT()
         try await sut.startRecording()
+        await sut.stopRecording()
+        // No chunks emitted → validTranscript is empty → state must be .failed
+        if case .failed = sut.state { } else {
+            XCTFail("Expected .failed when no audio captured, got \(sut.state)")
+        }
+    }
+
+    func test_stop_with_transcript_transitions_to_done() async throws {
+        let (sut, capture, _, store) = makeSUT()
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 300_000_000)
         await sut.stopRecording()
 
         if case .done(let id) = sut.state {

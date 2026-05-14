@@ -121,9 +121,8 @@ private struct LiveRecordingView: View {
                         .padding()
                     }
                     .onChange(of: coordinator.liveTranscript.count) { _, _ in
-                        let last = coordinator.liveTranscript.count - 1
-                        if last >= 0 {
-                            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                        if let last = coordinator.liveTranscript.last {
+                            withAnimation { proxy.scrollTo(last.timestamp, anchor: .bottom) }
                         }
                     }
                 }

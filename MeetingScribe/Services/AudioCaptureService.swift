@@ -16,9 +16,10 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         levelSubject.eraseToAnyPublisher()
     }
 
-    // Whether system audio is being captured (requires Screen Recording permission).
-    // False if Screen Recording was denied — recording continues with microphone only.
     private(set) var isCapturingSystemAudio = false
+    // Guards processBuffer after stopCapture() — prevents post-stopRunning callbacks
+    // from appending to chunkers after flush() has already been called.
+    private var isCapturing = false
 
     private var stream: SCStream?
     private var captureSession: AVCaptureSession?
@@ -53,10 +54,13 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             try? await existing.stopCapture()
             stream = nil
         }
+        isCapturing = false
         captureSession?.stopRunning()
         captureSession = nil
         cachedAudioConverter = nil
         cachedMicConverter = nil
+        // Complete the old subject so existing subscribers terminate cleanly.
+        subject.send(completion: .finished)
         subject = PassthroughSubject()
         isCapturingSystemAudio = false
 
@@ -73,6 +77,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         }
 
         startDate = Date()
+        isCapturing = true
     }
 
     private func startMicrophoneCapture() {
@@ -120,6 +125,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     }
 
     func stopCapture() async {
+        isCapturing = false
         do { try await stream?.stopCapture() } catch {
             print("[AudioCaptureService] Stream stop error: \(error)")
         }
@@ -153,6 +159,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     // MARK: - Shared processing
 
     private func processBuffer(_ sampleBuffer: CMSampleBuffer, isMicrophone: Bool) {
+        guard isCapturing else { return }  // drop late-arriving callbacks after stopCapture()
         guard let formatDesc = sampleBuffer.formatDescription else { return }
         let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc)
 
