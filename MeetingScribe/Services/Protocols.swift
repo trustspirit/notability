@@ -17,7 +17,7 @@ protocol AudioCaptureServiceProtocol {
 }
 
 protocol TranscriptionServiceProtocol {
-    func transcribe(audioURL: URL, timestamp: TimeInterval) async throws -> TranscriptChunk
+    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String?) async throws -> TranscriptChunk
 }
 
 protocol NoteGenerationServiceProtocol {

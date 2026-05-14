@@ -24,7 +24,7 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         self.httpClient = httpClient
     }
 
-    func transcribe(audioURL: URL, timestamp: TimeInterval) async throws -> TranscriptChunk {
+    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
         guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
             throw APIError.missingAPIKey
         }
@@ -42,7 +42,8 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             filename: audioURL.lastPathComponent,
             boundary: boundary,
             model: model,
-            language: language.isEmpty ? nil : language
+            language: language.isEmpty ? nil : language,
+            prompt: prompt
         )
 
         let (data, response) = try await httpClient.data(for: request)
@@ -53,7 +54,8 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func buildMultipartBody(audioData: Data, filename: String, boundary: String, model: String, language: String?) -> Data {
+    private func buildMultipartBody(audioData: Data, filename: String, boundary: String,
+                                    model: String, language: String?, prompt: String? = nil) -> Data {
         var body = Data()
         let CRLF = "\r\n"
         func field(_ name: String, _ value: String) {
@@ -63,6 +65,9 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         field("model", model)
         field("response_format", "text")
         if let lang = language { field("language", lang) }
+        // Provide last transcript as context so Whisper continues across chunk boundaries
+        // without cutting sentences or losing punctuation/capitalization context.
+        if let p = prompt, !p.isEmpty { field("prompt", p) }
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\(CRLF)".data(using: .utf8)!)
         body.append("Content-Type: audio/wav\(CRLF)\(CRLF)".data(using: .utf8)!)

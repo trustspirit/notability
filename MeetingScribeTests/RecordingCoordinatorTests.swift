@@ -78,7 +78,7 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
 }
 
 final class MockTranscriptionService: TranscriptionServiceProtocol {
-    func transcribe(audioURL: URL, timestamp: TimeInterval) async throws -> TranscriptChunk {
+    func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
         TranscriptChunk(timestamp: timestamp, text: "Mock transcription")
     }
 }

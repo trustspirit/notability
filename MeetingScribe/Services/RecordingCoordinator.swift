@@ -18,6 +18,8 @@ final class RecordingCoordinator: ObservableObject {
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
     private var levelCancellable: AnyCancellable?
+    // Last ~200 chars of transcript sent as Whisper prompt to preserve context across chunk boundaries.
+    private var lastTranscriptContext: String = ""
 
     private static let titleFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -44,6 +46,7 @@ final class RecordingCoordinator: ObservableObject {
     func startRecording() async throws {
         let id = UUID()
         liveTranscript = []
+        lastTranscriptContext = ""
         chunkHandlingTask?.cancel()
 
         // Start capture first — only save meeting if it actually succeeds.
@@ -143,9 +146,17 @@ final class RecordingCoordinator: ObservableObject {
     private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval)) async {
         defer { try? FileManager.default.removeItem(at: chunk.url) }
         do {
-            let transcriptChunk = try await transcription.transcribe(audioURL: chunk.url, timestamp: chunk.timestamp)
+            let ctx = lastTranscriptContext
+            let transcriptChunk = try await transcription.transcribe(
+                audioURL: chunk.url,
+                timestamp: chunk.timestamp,
+                prompt: ctx.isEmpty ? nil : ctx
+            )
             guard !transcriptChunk.text.isEmpty else { return }
             liveTranscript.append(transcriptChunk)
+            // Keep last ~200 chars as context for the next chunk to prevent sentence cutting.
+            let allText = liveTranscript.map(\.text).joined(separator: " ")
+            lastTranscriptContext = String(allText.suffix(200))
         } catch {
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed]")
             liveTranscript.append(errorChunk)
