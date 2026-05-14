@@ -8,6 +8,7 @@ struct MainWindowView: View {
     var body: some View {
         NavigationSplitView {
             MeetingSidebarView(selectedMeetingId: $selectedMeetingId)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
         } detail: {
             if case .recording = coordinator.state {
                 LiveRecordingView()
@@ -22,6 +23,7 @@ struct MainWindowView: View {
             }
         }
         .frame(minWidth: 700, minHeight: 500)
+        .toolbar(removing: .sidebarToggle)
         .onChange(of: coordinator.state) { _, newState in
             switch newState {
             case .done(let id):
@@ -124,25 +126,35 @@ private struct LiveRecordingView: View {
 
 private struct WaveformBarsView: View {
     let level: Float
-    private let barCount = 48
-    @State private var history: [Float] = Array(repeating: 0, count: 48)
+    private let barCount = 64
+    @State private var history: [Float] = Array(repeating: 0, count: 64)
 
     var body: some View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(0..<barCount, id: \.self) { i in
+                // Fade bars near the edges for a natural look
+                let edgeFade = edgeOpacity(i)
                 Capsule()
-                    .fill(.red.opacity(0.75))
-                    .frame(width: 3, height: max(3, CGFloat(history[i]) * 40 + 3))
+                    .fill(.red.opacity(0.8 * edgeFade))
+                    .frame(width: 3, height: max(2, CGFloat(history[i]) * 40 + 2))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 44)
         .onChange(of: level) { _, newLevel in
-            withAnimation(.linear(duration: 0.08)) {
+            withAnimation(.linear(duration: 0.1)) {
                 history.removeFirst()
-                // scale up: speech RMS is typically 0.01–0.1, map to 0.1–1.0
                 history.append(min(1.0, newLevel * 12))
             }
         }
+    }
+
+    private func edgeOpacity(_ index: Int) -> Double {
+        let fadeZone = 8 // number of bars to fade on each side
+        if index < fadeZone {
+            return Double(index + 1) / Double(fadeZone + 1)
+        } else if index >= barCount - fadeZone {
+            return Double(barCount - index) / Double(fadeZone + 1)
+        }
+        return 1.0
     }
 }
