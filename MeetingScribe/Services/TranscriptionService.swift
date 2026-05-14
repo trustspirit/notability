@@ -43,7 +43,6 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         guard (200..<300).contains(http.statusCode) else { throw APIError.httpError(http.statusCode) }
 
         let text = String(data: data, encoding: .utf8) ?? ""
-        try? FileManager.default.removeItem(at: audioURL)
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 

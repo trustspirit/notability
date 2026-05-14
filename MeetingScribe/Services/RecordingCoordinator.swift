@@ -95,6 +95,7 @@ final class RecordingCoordinator: ObservableObject {
         guard let id = currentMeetingId else { return }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
 
+        liveTranscript.sort { $0.timestamp < $1.timestamp }
         var meeting = store.fetch(id: id) ?? Meeting(id: id, title: "Meeting", date: Date(), durationSeconds: duration, transcript: liveTranscript, notes: nil, notesGenerationError: nil)
         meeting.durationSeconds = duration
         meeting.transcript = liveTranscript
@@ -119,6 +120,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval), meetingId: UUID) async {
+        defer { try? FileManager.default.removeItem(at: chunk.url) }
         do {
             let transcriptChunk = try await transcription.transcribe(audioURL: chunk.url, timestamp: chunk.timestamp)
             guard !transcriptChunk.text.isEmpty else { return }
