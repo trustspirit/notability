@@ -8,6 +8,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         subject.eraseToAnyPublisher()
     }
 
+    private let levelSubject = PassthroughSubject<Float, Never>()
+    var audioLevelPublisher: AnyPublisher<Float, Never> {
+        levelSubject.eraseToAnyPublisher()
+    }
+
     private var stream: SCStream?
     private let chunker: AudioChunker
     private var startDate: Date?
@@ -109,12 +114,23 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         if error == nil, dstBuffer.frameLength > 0 {
             let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
             chunker.append(dstBuffer, timestamp: elapsed)
+            levelSubject.send(computeRMS(dstBuffer))
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         chunker.flush()
         subject.send(completion: .finished)
+    }
+
+    private func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.int16ChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        var sum: Float = 0
+        for i in 0..<Int(buffer.frameLength) {
+            let s = Float(data[i]) / 32_768.0
+            sum += s * s
+        }
+        return sqrt(sum / Float(buffer.frameLength))
     }
 
     enum CaptureError: Error {

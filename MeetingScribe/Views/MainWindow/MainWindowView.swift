@@ -61,6 +61,10 @@ private struct LiveRecordingView: View {
             }
             .padding()
 
+            WaveformBarsView(level: coordinator.audioLevel)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
             Divider()
 
             if coordinator.liveTranscript.isEmpty {
@@ -114,5 +118,30 @@ private struct LiveRecordingView: View {
         let m = Int(t) / 60
         let s = Int(t) % 60
         return "\(m):\(String(format: "%02d", s))"
+    }
+}
+
+private struct WaveformBarsView: View {
+    let level: Float
+    private let barCount = 48
+    @State private var history: [Float] = Array(repeating: 0, count: 48)
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { i in
+                Capsule()
+                    .fill(.red.opacity(0.75))
+                    .frame(width: 3, height: max(3, CGFloat(history[i]) * 40 + 3))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(height: 44)
+        .onChange(of: level) { _, newLevel in
+            withAnimation(.linear(duration: 0.08)) {
+                history.removeFirst()
+                // scale up: speech RMS is typically 0.01–0.1, map to 0.1–1.0
+                history.append(min(1.0, newLevel * 12))
+            }
+        }
     }
 }

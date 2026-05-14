@@ -84,17 +84,31 @@ final class AudioChunker {
         onChunk?(url, ts)
     }
 
+    // Returns the peak RMS over 1-second windows instead of average over the whole chunk.
+    // Averaging over 30 seconds drops below threshold even for clear speech with silences —
+    // e.g. 5 seconds of speech in a 30-second chunk gives only ~41% of the actual speech RMS.
     private func rms() -> Float {
-        var sum: Float = 0
-        var count: AVAudioFrameCount = 0
+        let windowSize: Int = 16000 // 1 second at 16 kHz
+        var windowSum: Float = 0
+        var windowCount = 0
+        var peakRMS: Float = 0
+
         for buf in accumulatedBuffers {
             guard let data = buf.int16ChannelData?[0] else { continue }
             for i in 0..<Int(buf.frameLength) {
                 let s = Float(data[i]) / 32_768.0
-                sum += s * s
+                windowSum += s * s
+                windowCount += 1
+                if windowCount >= windowSize {
+                    peakRMS = max(peakRMS, sqrt(windowSum / Float(windowCount)))
+                    windowSum = 0
+                    windowCount = 0
+                }
             }
-            count += buf.frameLength
         }
-        return count > 0 ? sqrt(sum / Float(count)) : 0
+        if windowCount > 0 {
+            peakRMS = max(peakRMS, sqrt(windowSum / Float(windowCount)))
+        }
+        return peakRMS
     }
 }

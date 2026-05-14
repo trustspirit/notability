@@ -65,6 +65,7 @@ final class RecordingCoordinatorTests: XCTestCase {
 final class MockAudioCaptureService: AudioCaptureServiceProtocol {
     private let subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
     var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> { subject.eraseToAnyPublisher() }
+    var audioLevelPublisher: AnyPublisher<Float, Never> { Empty().eraseToAnyPublisher() }
     var startCalled = false
     var stopCalled = false
 

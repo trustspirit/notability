@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM packages
+        run: xcodebuild -resolvePackageDependencies -project MeetingScribe.xcodeproj -scheme MeetingScribe
+
+      - name: Build Release
+        run: |
+          xcodebuild \
+            -project MeetingScribe.xcodeproj \
+            -scheme MeetingScribe \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=YES \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Get version info
+        id: info
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          BUILD=$(git rev-list --count HEAD)
+          printf 'tag=%s\n' "$TAG" >> $GITHUB_OUTPUT
+          printf 'version=%s\n' "$VERSION" >> $GITHUB_OUTPUT
+          printf 'build=%s\n' "$BUILD" >> $GITHUB_OUTPUT
+
+      - name: Package app
+        run: |
+          APP="build/DerivedData/Build/Products/Release/Notability.app"
+          ditto -c -k --keepParent "$APP" Notability.zip
+          printf 'zip_size=%s\n' "$(stat -f%z Notability.zip)" >> "$GITHUB_ENV"
+
+      - name: Download Sparkle tools
+        run: |
+          SPARKLE_VER="2.6.4"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VER}/Sparkle-${SPARKLE_VER}.tar.xz" -o sparkle.tar.xz
+          mkdir sparkle-bin
+          tar xf sparkle.tar.xz -C sparkle-bin
+          chmod +x sparkle-bin/bin/sign_update
+
+      - name: Sign update with Sparkle EdDSA
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          echo "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle_priv_key
+          ED_SIG=$(sparkle-bin/bin/sign_update Notability.zip --ed-key-file /tmp/sparkle_priv_key 2>/dev/null)
+          rm -f /tmp/sparkle_priv_key
+          printf 'ed_sig=%s\n' "$ED_SIG" >> "$GITHUB_ENV"
+
+      - name: Generate appcast.xml
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+          TAG: ${{ steps.info.outputs.tag }}
+          BUILD: ${{ steps.info.outputs.build }}
+        run: |
+          PUBDATE=$(date -R)
+          DOWNLOAD_URL="https://github.com/trustspirit/notability/releases/download/${TAG}/Notability.zip"
+
+          cat > appcast.xml << APPCAST
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0"
+               xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+               xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>Notability Updates</title>
+              <link>https://github.com/trustspirit/notability</link>
+              <language>en</language>
+              <item>
+                <title>Version ${VERSION}</title>
+                <pubDate>${PUBDATE}</pubDate>
+                <sparkle:version>${BUILD}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <enclosure
+                    url="${DOWNLOAD_URL}"
+                    sparkle:edSignature="${ed_sig}"
+                    length="${zip_size}"
+                    type="application/octet-stream"/>
+              </item>
+            </channel>
+          </rss>
+          APPCAST
+
+      - name: Create GitHub Release
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+          TAG: ${{ steps.info.outputs.tag }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.info.outputs.tag }}
+          name: "Notability ${{ steps.info.outputs.version }}"
+          body: |
+            ## Notability ${{ steps.info.outputs.version }}
+
+            ### 빠른 설치 (터미널)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/trustspirit/notability/main/install.sh | bash
+            ```
+
+            ### 수동 설치
+            `Notability.zip` 을 다운로드 후:
+            ```bash
+            unzip Notability.zip && xattr -cr Notability.app && mv Notability.app /Applications/
+            ```
+          files: |
+            Notability.zip
+            appcast.xml
+
+      - name: Commit updated appcast.xml to main
+        env:
+          TAG: ${{ steps.info.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add appcast.xml
+          git diff --staged --quiet || git commit -m "chore: update appcast.xml for ${TAG}
+
+          Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin main

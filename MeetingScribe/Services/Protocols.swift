@@ -11,6 +11,7 @@ protocol MeetingStoreProtocol {
 
 protocol AudioCaptureServiceProtocol {
     var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> { get }
+    var audioLevelPublisher: AnyPublisher<Float, Never> { get }
     func startCapture() async throws
     func stopCapture() async
 }

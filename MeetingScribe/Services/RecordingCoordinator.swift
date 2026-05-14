@@ -6,6 +6,7 @@ import UserNotifications
 final class RecordingCoordinator: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published var liveTranscript: [TranscriptChunk] = []
+    @Published private(set) var audioLevel: Float = 0
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -15,6 +16,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var currentMeetingId: UUID?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
+    private var levelCancellable: AnyCancellable?
 
     private static let titleFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -53,6 +55,10 @@ final class RecordingCoordinator: ObservableObject {
         recordingStart = Date()
         state = .recording(elapsed: 0)
 
+        levelCancellable = audioCapture.audioLevelPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] level in self?.audioLevel = level }
+
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let start = self.recordingStart else { return }
@@ -83,6 +89,9 @@ final class RecordingCoordinator: ObservableObject {
     func stopRecording() async {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+        levelCancellable?.cancel()
+        levelCancellable = nil
+        audioLevel = 0
 
         // stopCapture() flushes the final partial chunk (synchronously) then
         // sends .finished on the publisher, causing the for-await loop in

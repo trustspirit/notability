@@ -11,6 +11,10 @@
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSUIElement</key><true/>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/trustspirit/notability/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>SPARKLE_PUBLIC_KEY_PLACEHOLDER</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Notability captures system audio to transcribe your meetings.</string>
     <key>NSMicrophoneUsageDescription</key>
