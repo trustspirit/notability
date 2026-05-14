@@ -108,6 +108,7 @@ private struct LiveRecordingView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func formatElapsed(_ t: TimeInterval) -> String {
@@ -134,7 +135,7 @@ private struct WaveformBarsView: View {
                     .frame(width: 3, height: max(3, CGFloat(history[i]) * 40 + 3))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 44)
         .onChange(of: level) { _, newLevel in
             withAnimation(.linear(duration: 0.08)) {

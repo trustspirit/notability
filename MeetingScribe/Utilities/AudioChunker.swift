@@ -50,10 +50,9 @@ final class AudioChunker {
         _emitChunk()
     }
 
-    // RMS threshold below which a chunk is considered silent and skipped.
-    // 0.004 ≈ -48 dBFS — low enough to catch real speech, high enough to drop
-    // background hiss that would otherwise trigger whisper hallucinations.
-    private static let silenceThreshold: Float = 0.004
+    // Peak RMS threshold per 1-second window; chunks below this are silent.
+    // 0.001 ≈ -60 dBFS catches near-silent speech while still dropping pure hiss.
+    private static let silenceThreshold: Float = 0.001
 
     private func _emitChunk() {
         guard !accumulatedBuffers.isEmpty else { return }
