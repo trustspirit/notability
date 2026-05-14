@@ -16,7 +16,9 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     private var stream: SCStream?
     private let chunker: AudioChunker
     private var startDate: Date?
-    private var cachedConverter: AVAudioConverter?
+    // Separate converters per source type to avoid recreation on alternating .audio/.microphone buffers
+    private var cachedAudioConverter: AVAudioConverter?
+    private var cachedMicConverter: AVAudioConverter?
 
     private let captureFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
@@ -39,6 +41,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             try? await existing.stopCapture()
             stream = nil
         }
+        cachedAudioConverter = nil
+        cachedMicConverter = nil
         // Fresh subject for each session — the previous one was completed by stopCapture().
         subject = PassthroughSubject()
         let content: SCShareableContent
@@ -67,6 +71,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
 
         stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
+        if #available(macOS 15.0, *) {
+            // captureMicrophone delivers user's voice via a SEPARATE .microphone output type —
+            // it is NOT mixed into .audio. Without this subscription the mic is silently ignored.
+            try stream?.addStreamOutput(self, type: .microphone, sampleHandlerQueue: .global(qos: .userInitiated))
+        }
         do {
             try await stream?.startCapture()
         } catch {
@@ -90,7 +99,15 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
+        let isMicrophone: Bool
+        if #available(macOS 15.0, *) {
+            guard type == .audio || type == .microphone else { return }
+            isMicrophone = (type == .microphone)
+        } else {
+            guard type == .audio else { return }
+            isMicrophone = false
+        }
+
         guard let formatDesc = sampleBuffer.formatDescription else { return }
         let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc)
 
@@ -99,11 +116,18 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         srcBuffer.frameLength = frameCount
         CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frameCount), into: srcBuffer.mutableAudioBufferList)
 
-        // Reuse converter as long as source format hasn't changed
-        if cachedConverter == nil || !(cachedConverter!.inputFormat.isEqual(srcFormat)) {
-            cachedConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
+        // Use separate cached converters for system audio vs microphone to avoid
+        // recreating the converter on every alternating buffer.
+        if isMicrophone {
+            if cachedMicConverter == nil || !cachedMicConverter!.inputFormat.isEqual(srcFormat) {
+                cachedMicConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
+            }
+        } else {
+            if cachedAudioConverter == nil || !cachedAudioConverter!.inputFormat.isEqual(srcFormat) {
+                cachedAudioConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
+            }
         }
-        guard let converter = cachedConverter,
+        guard let converter = isMicrophone ? cachedMicConverter : cachedAudioConverter,
               let dstBuffer = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: frameCount) else { return }
 
         var error: NSError?
@@ -114,7 +138,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         if error == nil, dstBuffer.frameLength > 0 {
             let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
             chunker.append(dstBuffer, timestamp: elapsed)
-            levelSubject.send(computeRMS(dstBuffer))
+            // Use mic level for waveform when available — it reflects the user's voice
+            if isMicrophone { levelSubject.send(computeRMS(dstBuffer)) }
         }
     }
 
