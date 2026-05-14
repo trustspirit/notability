@@ -11,6 +11,13 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var systemAudioAvailable: Bool = true
     @Published private(set) var pendingTranscriptionCount = 0
     private var livePartialTranscriptToken: UUID?
+    var visibleLiveTranscript: [TranscriptChunk] {
+        var rows = liveTranscript
+        if let livePartialTranscript {
+            rows.append(livePartialTranscript)
+        }
+        return Self.mergedTranscriptRows(from: rows)
+    }
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -119,7 +126,7 @@ final class RecordingCoordinator: ObservableObject {
         }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
 
-        liveTranscript.sort { $0.timestamp < $1.timestamp }
+        liveTranscript = Self.mergedTranscriptRows(from: liveTranscript)
         var meeting = store.fetch(id: id) ?? Meeting(id: id, title: "Meeting", date: Date(), durationSeconds: duration, transcript: liveTranscript, notes: nil, notesGenerationError: nil)
         meeting.durationSeconds = duration
         meeting.transcript = liveTranscript
@@ -172,7 +179,7 @@ final class RecordingCoordinator: ObservableObject {
                 return
             }
             clearLivePartialTranscript(token: partialToken)
-            liveTranscript.append(transcriptChunk)
+            addTranscriptChunk(transcriptChunk)
             // Keep last ~200 chars as context for the next chunk to prevent sentence cutting.
             let allText = liveTranscript
                 .filter { !Self.isTranscriptionFailure($0.text) && Self.isMeaningfulTranscript($0.text) }
@@ -182,8 +189,13 @@ final class RecordingCoordinator: ObservableObject {
         } catch {
             clearLivePartialTranscript(token: partialToken)
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
-            liveTranscript.append(errorChunk)
+            addTranscriptChunk(errorChunk)
         }
+    }
+
+    private func addTranscriptChunk(_ chunk: TranscriptChunk) {
+        liveTranscript.append(chunk)
+        liveTranscript = Self.mergedTranscriptRows(from: liveTranscript)
     }
 
     private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
@@ -202,6 +214,55 @@ final class RecordingCoordinator: ObservableObject {
 
     private static func isTranscriptionFailure(_ text: String) -> Bool {
         text.hasPrefix(transcriptionFailurePrefix)
+    }
+
+    private static func mergedTranscriptRows(from chunks: [TranscriptChunk]) -> [TranscriptChunk] {
+        let sorted = chunks.sorted { $0.timestamp < $1.timestamp }
+        var merged: [TranscriptChunk] = []
+
+        for chunk in sorted {
+            let text = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let row = TranscriptChunk(timestamp: chunk.timestamp, text: text)
+
+            guard
+                let last = merged.last,
+                !isTranscriptionFailure(last.text),
+                !isTranscriptionFailure(text),
+                shouldMergeWithPreviousSentence(last.text)
+            else {
+                merged.append(row)
+                continue
+            }
+
+            merged[merged.count - 1] = TranscriptChunk(
+                timestamp: last.timestamp,
+                text: joinedTranscriptText(last.text, text)
+            )
+        }
+
+        return merged
+    }
+
+    private static func shouldMergeWithPreviousSentence(_ text: String) -> Bool {
+        !endsWithSentenceTerminator(text)
+    }
+
+    private static func endsWithSentenceTerminator(_ text: String) -> Bool {
+        let closingCharacters = Set<Character>(["\"", "'", "”", "’", ")", "]", "}"])
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastMeaningful = trimmed.reversed().first(where: { !closingCharacters.contains($0) }) else {
+            return false
+        }
+        return [".", "?", "!", "。", "！", "？"].contains(lastMeaningful)
+    }
+
+    private static func joinedTranscriptText(_ left: String, _ right: String) -> String {
+        let trimmedLeft = left.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRight = right.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLeft.isEmpty else { return trimmedRight }
+        guard !trimmedRight.isEmpty else { return trimmedLeft }
+        return "\(trimmedLeft) \(trimmedRight)"
     }
 
     private static func isMeaningfulTranscript(_ text: String) -> Bool {

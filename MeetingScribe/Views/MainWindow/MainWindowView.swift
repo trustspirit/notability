@@ -111,7 +111,7 @@ private struct LiveRecordingView: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 48, alignment: .trailing)
                                         .padding(.top, 1)
-                                    if isTranscriptionFailure(chunk.text) || isPartialRow(index, rows: transcriptRows) {
+                                    if isTranscriptionFailure(chunk.text) {
                                         Text(chunk.text)
                                             .foregroundStyle(.secondary)
                                             .italic()
@@ -153,15 +153,7 @@ private struct LiveRecordingView: View {
     }
 
     private var visibleTranscriptRows: [TranscriptChunk] {
-        var rows = coordinator.liveTranscript
-        if let partial = coordinator.livePartialTranscript {
-            rows.append(partial)
-        }
-        return rows
-    }
-
-    private func isPartialRow(_ index: Int, rows: [TranscriptChunk]) -> Bool {
-        coordinator.livePartialTranscript != nil && index == rows.count - 1 && index >= coordinator.liveTranscript.count
+        coordinator.visibleLiveTranscript
     }
 
     private func scrollToLast(_ proxy: ScrollViewProxy) {

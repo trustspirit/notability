@@ -63,6 +63,54 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertFalse(sut.liveTranscript.isEmpty)
     }
 
+    func test_transcript_chunks_merge_until_sentence_terminates() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "그렇습니다 그래서 이게 또 전문 용어",
+            "뭐가 있군요.",
+            "다음 문장입니다."
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 6)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 12)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 2)
+        XCTAssertEqual(sut.liveTranscript[0].timestamp, 0)
+        XCTAssertEqual(sut.liveTranscript[0].text, "그렇습니다 그래서 이게 또 전문 용어 뭐가 있군요.")
+        XCTAssertEqual(sut.liveTranscript[1].timestamp, 12)
+        XCTAssertEqual(sut.liveTranscript[1].text, "다음 문장입니다.")
+    }
+
+    func test_live_partial_merges_with_previous_unfinished_sentence_for_display() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.text = "제가 만약에"
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        transcription.text = "만 원에 샀어요."
+        transcription.partials = ["만 원에"]
+        transcription.delayNanoseconds = 300_000_000
+        try emitTempChunk(capture, timestamp: 6)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sut.visibleLiveTranscript.count, 1)
+        XCTAssertEqual(sut.visibleLiveTranscript.first?.text, "제가 만약에 만 원에")
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 1)
+        XCTAssertEqual(sut.liveTranscript.first?.text, "제가 만약에 만 원에 샀어요.")
+    }
+
     func test_partial_transcript_updates_live_caption_before_final() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.partials = ["실시간 자막"]
@@ -146,6 +194,12 @@ final class RecordingCoordinatorTests: XCTestCase {
         let sut = RecordingCoordinator(audioCapture: capture, transcription: transcription, noteGeneration: noteGen, store: store)
         return (sut, capture, transcription, store)
     }
+
+    private func emitTempChunk(_ capture: MockAudioCaptureService, timestamp: TimeInterval) throws {
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: timestamp))
+    }
 }
 
 // MARK: - Mocks
@@ -167,6 +221,7 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
 
 final class MockTranscriptionService: TranscriptionServiceProtocol {
     var text = "Mock transcription"
+    var texts: [String] = []
     var error: Error?
     var partials: [String] = []
     var delayNanoseconds: UInt64 = 0
@@ -184,7 +239,8 @@ final class MockTranscriptionService: TranscriptionServiceProtocol {
         if delayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         }
-        return TranscriptChunk(timestamp: timestamp, text: text)
+        let responseText = texts.isEmpty ? text : texts.removeFirst()
+        return TranscriptChunk(timestamp: timestamp, text: responseText)
     }
 }
 
