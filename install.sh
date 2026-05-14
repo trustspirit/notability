@@ -34,6 +34,10 @@ ditto -xk "${TMP_DIR}/${APP_NAME}.zip" "$TMP_DIR"
 echo "Removing quarantine..."
 xattr -cr "${TMP_DIR}/${APP_NAME}.app"
 
+# Re-sign deeply so Sparkle's Autoupdate XPC service can run on macOS 12+
+echo "Signing app..."
+codesign --deep --force --sign - "${TMP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+
 if [ -d "${INSTALL_DIR}/${APP_NAME}.app" ]; then
   echo "Replacing existing installation..."
   rm -rf "${INSTALL_DIR}/${APP_NAME}.app"

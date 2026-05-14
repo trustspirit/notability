@@ -54,6 +54,13 @@ jobs:
           printf 'version=%s\n' "$VERSION" >> $GITHUB_OUTPUT
           printf 'build=%s\n' "$BUILD" >> $GITHUB_OUTPUT
 
+      - name: Sign app bundle deeply
+        run: |
+          APP="build/DerivedData/Build/Products/Release/Notability.app"
+          # Re-sign all embedded content with the same ad-hoc identity so that
+          # Sparkle's Autoupdate XPC service can communicate with the host app.
+          codesign --deep --force --sign - "$APP"
+
       - name: Package app
         run: |
           APP="build/DerivedData/Build/Products/Release/Notability.app"
