@@ -26,6 +26,7 @@ final class RecordingCoordinator: ObservableObject {
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
     }()
+    private static let transcriptionFailurePrefix = "[transcription failed"
 
     init(
         audioCapture: AudioCaptureServiceProtocol,
@@ -121,7 +122,7 @@ final class RecordingCoordinator: ObservableObject {
         state = .processing
 
         do {
-            let validTranscript = liveTranscript.filter { $0.text != "[transcription failed]" }
+            let validTranscript = liveTranscript.filter { !Self.isTranscriptionFailure($0.text) }
             guard !validTranscript.isEmpty else {
                 let msg = "No audio was captured or all transcription attempts failed."
                 meeting.notesGenerationError = msg
@@ -152,15 +153,32 @@ final class RecordingCoordinator: ObservableObject {
                 timestamp: chunk.timestamp,
                 prompt: ctx.isEmpty ? nil : ctx
             )
-            guard !transcriptChunk.text.isEmpty else { return }
+            guard !transcriptChunk.text.isEmpty, Self.isMeaningfulTranscript(transcriptChunk.text) else { return }
             liveTranscript.append(transcriptChunk)
             // Keep last ~200 chars as context for the next chunk to prevent sentence cutting.
-            let allText = liveTranscript.map(\.text).joined(separator: " ")
+            let allText = liveTranscript
+                .filter { !Self.isTranscriptionFailure($0.text) && Self.isMeaningfulTranscript($0.text) }
+                .map(\.text)
+                .joined(separator: " ")
             lastTranscriptContext = String(allText.suffix(200))
         } catch {
-            let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed]")
+            let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
             liveTranscript.append(errorChunk)
         }
+    }
+
+    private static func isTranscriptionFailure(_ text: String) -> Bool {
+        text.hasPrefix(transcriptionFailurePrefix)
+    }
+
+    private static func isMeaningfulTranscript(_ text: String) -> Bool {
+        let normalized = text
+            .filter { !$0.isWhitespace && !$0.isPunctuation }
+        guard !normalized.isEmpty else { return false }
+        if normalized.allSatisfy({ $0 == "아" }) {
+            return false
+        }
+        return true
     }
 
     private func sendCompletionNotification() {

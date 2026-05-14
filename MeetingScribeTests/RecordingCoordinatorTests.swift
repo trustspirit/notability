@@ -63,6 +63,36 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertFalse(sut.liveTranscript.isEmpty)
     }
 
+    func test_repeated_filler_transcript_is_dropped() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.text = "아. 아. 아. 아."
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(sut.liveTranscript.isEmpty)
+    }
+
+    func test_transcription_failure_includes_error_message() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.error = StubTranscriptionError(message: "Realtime rejected the session")
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.first?.text, "[transcription failed: Realtime rejected the session]")
+    }
+
     // MARK: - Helpers
 
     private func makeSUT() -> (RecordingCoordinator, MockAudioCaptureService, MockTranscriptionService, MeetingStore) {
@@ -95,9 +125,18 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
 }
 
 final class MockTranscriptionService: TranscriptionServiceProtocol {
+    var text = "Mock transcription"
+    var error: Error?
+
     func transcribe(audioURL: URL, timestamp: TimeInterval, prompt: String? = nil) async throws -> TranscriptChunk {
-        TranscriptChunk(timestamp: timestamp, text: "Mock transcription")
+        if let error { throw error }
+        return TranscriptChunk(timestamp: timestamp, text: text)
     }
+}
+
+struct StubTranscriptionError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 final class MockNoteGenerationService: NoteGenerationServiceProtocol {

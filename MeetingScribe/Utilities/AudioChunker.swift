@@ -17,10 +17,16 @@ final class AudioChunker {
     private static let sentenceBoundaryDuration: Double = 0.6
     private static let minChunkDuration: Double = 2.0   // avoid tiny fragments
 
+    private static let sampleRate: Double = 16_000
+
     // Silence threshold for per-buffer boundary detection (slightly above background hiss).
     private static let boundaryThreshold: Float = 0.003
-    // Whole-chunk threshold: filter chunks that are entirely near-silent.
-    private static let silenceThreshold: Float = 0.001
+    // Whole-chunk thresholds: filter low-level room noise that ASR models often
+    // hallucinate as short filler syllables.
+    private static let speechThreshold: Float = 0.005
+    private static let strongSpeechThreshold: Float = 0.015
+    private static let minSpeechDuration: Double = 0.2
+    private static let analysisWindowFrames = 320 // 20 ms at 16 kHz
 
     // Fallback max duration — emit even without a silence boundary (non-stop speech).
     // Exposed as init parameter for testability.
@@ -55,7 +61,7 @@ final class AudioChunker {
             consecutiveSilentFrames = 0
         }
 
-        let sr = AVAudioFrameCount(16000)
+        let sr = AVAudioFrameCount(Self.sampleRate)
         let minFrames   = AVAudioFrameCount(Double(sr) * Self.minChunkDuration)
         let boundFrames = AVAudioFrameCount(Double(sr) * Self.sentenceBoundaryDuration)
         let maxFrames   = AVAudioFrameCount(Double(sr) * maxChunkDuration)
@@ -76,8 +82,9 @@ final class AudioChunker {
 
     private func _emitChunk() {
         guard !accumulatedBuffers.isEmpty else { return }
-        // Drop chunks that are entirely near-silent (background noise, no speech).
-        guard rms() > Self.silenceThreshold else {
+        // Drop chunks that do not contain sustained speech-like activity. Sending
+        // these to ASR tends to produce filler hallucinations such as repeated "아".
+        guard containsSpeechActivity() else {
             resetState()
             return
         }
@@ -114,28 +121,43 @@ final class AudioChunker {
         return sqrt(sum / Float(buffer.frameLength))
     }
 
-    // Whole-chunk peak RMS over 1-second windows — used to filter silent chunks.
-    private func rms() -> Float {
-        let windowSize: Int = 16000
+    private func containsSpeechActivity() -> Bool {
+        let activity = speechActivity()
+        let activeDuration = Double(activity.activeFrames) / Self.sampleRate
+        return activeDuration >= Self.minSpeechDuration || activity.peakRMS >= Self.strongSpeechThreshold
+    }
+
+    // Whole-chunk activity over short windows — used to filter silence and
+    // low-level steady noise while keeping short, clear utterances.
+    private func speechActivity() -> (peakRMS: Float, activeFrames: Int) {
         var windowSum: Float = 0
         var windowCount = 0
         var peakRMS: Float = 0
+        var activeFrames = 0
+
+        func finishWindow() {
+            guard windowCount > 0 else { return }
+            let windowRMS = sqrt(windowSum / Float(windowCount))
+            peakRMS = max(peakRMS, windowRMS)
+            if windowRMS >= Self.speechThreshold {
+                activeFrames += windowCount
+            }
+            windowSum = 0
+            windowCount = 0
+        }
+
         for buf in accumulatedBuffers {
             guard let data = buf.int16ChannelData?[0] else { continue }
             for i in 0..<Int(buf.frameLength) {
                 let s = Float(data[i]) / 32_768.0
                 windowSum += s * s
                 windowCount += 1
-                if windowCount >= windowSize {
-                    peakRMS = max(peakRMS, sqrt(windowSum / Float(windowCount)))
-                    windowSum = 0
-                    windowCount = 0
+                if windowCount >= Self.analysisWindowFrames {
+                    finishWindow()
                 }
             }
         }
-        if windowCount > 0 {
-            peakRMS = max(peakRMS, sqrt(windowSum / Float(windowCount)))
-        }
-        return peakRMS
+        finishWindow()
+        return (peakRMS, activeFrames)
     }
 }

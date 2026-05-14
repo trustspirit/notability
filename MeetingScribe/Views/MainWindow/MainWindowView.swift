@@ -56,7 +56,7 @@ private struct LiveRecordingView: View {
                 }
                 Spacer()
                 if !coordinator.liveTranscript.isEmpty {
-                    Text("\(coordinator.liveTranscript.filter { $0.text != "[transcription failed]" }.count) segments")
+                    Text("\(coordinator.liveTranscript.filter { !isTranscriptionFailure($0.text) }.count) segments")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -105,7 +105,7 @@ private struct LiveRecordingView: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 48, alignment: .trailing)
                                         .padding(.top, 1)
-                                    if chunk.text == "[transcription failed]" {
+                                    if isTranscriptionFailure(chunk.text) {
                                         Text(chunk.text)
                                             .foregroundStyle(.secondary)
                                             .italic()
@@ -139,6 +139,10 @@ private struct LiveRecordingView: View {
         let m = Int(t) / 60
         let s = Int(t) % 60
         return "\(m):\(String(format: "%02d", s))"
+    }
+
+    private func isTranscriptionFailure(_ text: String) -> Bool {
+        text.hasPrefix("[transcription failed")
     }
 }
 

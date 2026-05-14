@@ -147,7 +147,7 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         let pcmData = try convertToRealtimePCM16(audioURL: audioURL)
         guard !pcmData.isEmpty else { return "" }
 
-        var request = URLRequest(url: endpoint(for: model))
+        var request = URLRequest(url: endpoint())
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let task = session.webSocketTask(with: request)
@@ -161,12 +161,12 @@ final class RealtimeAPITranscriber: OpenAITranscriber {
         return try await receiveTranscript(from: task)
     }
 
-    private func endpoint(for model: String) -> URL {
+    private func endpoint() -> URL {
         var components = URLComponents()
         components.scheme = "wss"
         components.host = "api.openai.com"
         components.path = "/v1/realtime"
-        components.queryItems = [URLQueryItem(name: "model", value: model)]
+        components.queryItems = [URLQueryItem(name: "intent", value: "transcription")]
         return components.url!
     }
 

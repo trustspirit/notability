@@ -113,15 +113,37 @@ final class AudioChunkerTests: XCTestCase {
         XCTAssertFalse(emitted, "Silent chunks must not be emitted")
     }
 
+    func test_low_level_noise_chunk_is_not_emitted() {
+        let chunker = AudioChunker(outputDirectory: tempDir)
+        var emitted = false
+        chunker.onChunk = { _, _ in emitted = true }
+
+        chunker.append(makeToneBuffer(sampleCount: 16000, amplitude: 120), timestamp: 0)
+        chunker.flush()
+
+        XCTAssertFalse(emitted, "Low-level room noise must not be sent for transcription")
+    }
+
+    func test_quiet_speech_like_chunk_is_emitted() {
+        let chunker = AudioChunker(outputDirectory: tempDir)
+        let expectation = expectation(description: "quiet speech-like audio emitted")
+        chunker.onChunk = { _, _ in expectation.fulfill() }
+
+        chunker.append(makeToneBuffer(sampleCount: 16000, amplitude: 800), timestamp: 0)
+        chunker.flush()
+
+        wait(for: [expectation], timeout: 2)
+    }
+
     // MARK: - Helpers
 
-    private func makeToneBuffer(sampleCount: AVAudioFrameCount) -> AVAudioPCMBuffer {
+    private func makeToneBuffer(sampleCount: AVAudioFrameCount, amplitude: Double = 32767) -> AVAudioPCMBuffer {
         let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false)!
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
         buffer.frameLength = sampleCount
         let data = buffer.int16ChannelData![0]
         for i in 0..<Int(sampleCount) {
-            data[i] = Int16(sin(2 * .pi * 440 * Double(i) / 16000) * 32767)
+            data[i] = Int16(sin(2 * .pi * 440 * Double(i) / 16000) * amplitude)
         }
         return buffer
     }
