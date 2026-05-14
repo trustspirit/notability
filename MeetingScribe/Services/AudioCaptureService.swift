@@ -14,9 +14,14 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
     }
 
     private var stream: SCStream?
-    private let chunker: AudioChunker
     private var startDate: Date?
-    // Separate converters per source type to avoid recreation on alternating .audio/.microphone buffers
+
+    // Each source gets its own chunker so their audio is sent to Whisper separately —
+    // concatenating them into one buffer doubles the WAV duration and confuses transcription.
+    private let systemAudioChunker = AudioChunker()
+    private let micChunker = AudioChunker()
+
+    // Separate converters per source to avoid recreation on every alternating buffer.
     private var cachedAudioConverter: AVAudioConverter?
     private var cachedMicConverter: AVAudioConverter?
 
@@ -27,24 +32,24 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         interleaved: false
     )!
 
-    init(chunker: AudioChunker = AudioChunker()) {
-        self.chunker = chunker
+    override init() {
         super.init()
-        self.chunker.onChunk = { [weak self] url, ts in
+        let publish: (URL, TimeInterval) -> Void = { [weak self] url, ts in
             self?.subject.send((url: url, timestamp: ts))
         }
+        systemAudioChunker.onChunk = publish
+        micChunker.onChunk = publish
     }
 
     func startCapture() async throws {
-        // Clean up any lingering stream from a previous session
         if let existing = stream {
             try? await existing.stopCapture()
             stream = nil
         }
         cachedAudioConverter = nil
         cachedMicConverter = nil
-        // Fresh subject for each session — the previous one was completed by stopCapture().
         subject = PassthroughSubject()
+
         let content: SCShareableContent
         do {
             content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -64,16 +69,13 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         if #available(macOS 15.0, *) {
             config.captureMicrophone = true
         }
-        // Minimize video capture (audio-only focus)
         config.width = 2
         config.height = 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)  // 1 fps
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
         if #available(macOS 15.0, *) {
-            // captureMicrophone delivers user's voice via a SEPARATE .microphone output type —
-            // it is NOT mixed into .audio. Without this subscription the mic is silently ignored.
             try stream?.addStreamOutput(self, type: .microphone, sampleHandlerQueue: .global(qos: .userInitiated))
         }
         do {
@@ -93,8 +95,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             print("[AudioCaptureService] Stream stop error: \(error)")
         }
         stream = nil
-        // flush() is synchronous — final chunk is sent before completion fires.
-        chunker.flush()
+        systemAudioChunker.flush()
+        micChunker.flush()
         subject.send(completion: .finished)
     }
 
@@ -116,8 +118,6 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         srcBuffer.frameLength = frameCount
         CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frameCount), into: srcBuffer.mutableAudioBufferList)
 
-        // Use separate cached converters for system audio vs microphone to avoid
-        // recreating the converter on every alternating buffer.
         if isMicrophone {
             if cachedMicConverter == nil || !cachedMicConverter!.inputFormat.isEqual(srcFormat) {
                 cachedMicConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
@@ -135,16 +135,20 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             outStatus.pointee = .haveData
             return srcBuffer
         }
-        if error == nil, dstBuffer.frameLength > 0 {
-            let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
-            chunker.append(dstBuffer, timestamp: elapsed)
-            // Use mic level for waveform when available — it reflects the user's voice
-            if isMicrophone { levelSubject.send(computeRMS(dstBuffer)) }
+        guard error == nil, dstBuffer.frameLength > 0 else { return }
+
+        let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
+        if isMicrophone {
+            micChunker.append(dstBuffer, timestamp: elapsed)
+            levelSubject.send(computeRMS(dstBuffer))
+        } else {
+            systemAudioChunker.append(dstBuffer, timestamp: elapsed)
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        chunker.flush()
+        systemAudioChunker.flush()
+        micChunker.flush()
         subject.send(completion: .finished)
     }
 

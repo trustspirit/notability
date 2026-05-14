@@ -25,8 +25,15 @@ final class ModelSettings: ObservableObject {
         didSet { UserDefaults.standard.set(noteModel, forKey: "noteModel") }
     }
 
+    // BCP-47 language code sent to Whisper (e.g. "ko", "en", "ja").
+    // Empty string = let Whisper auto-detect, but auto-detect can misfire on short clips.
+    @Published var transcriptionLanguage: String {
+        didSet { UserDefaults.standard.set(transcriptionLanguage, forKey: "transcriptionLanguage") }
+    }
+
     private init() {
         transcriptionModel = UserDefaults.standard.string(forKey: "transcriptionModel") ?? "gpt-4o-transcribe"
         noteModel = UserDefaults.standard.string(forKey: "noteModel") ?? "gpt-5.5"
+        transcriptionLanguage = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "ko"
     }
 }

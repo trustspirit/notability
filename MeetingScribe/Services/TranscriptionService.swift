@@ -29,6 +29,7 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             throw APIError.missingAPIKey
         }
         let model = ModelSettings.shared.transcriptionModel
+        let language = ModelSettings.shared.transcriptionLanguage
 
         let audioData = try Data(contentsOf: audioURL)
         let boundary = UUID().uuidString
@@ -36,7 +37,13 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = buildMultipartBody(audioData: audioData, filename: audioURL.lastPathComponent, boundary: boundary, model: model)
+        request.httpBody = buildMultipartBody(
+            audioData: audioData,
+            filename: audioURL.lastPathComponent,
+            boundary: boundary,
+            model: model,
+            language: language.isEmpty ? nil : language
+        )
 
         let (data, response) = try await httpClient.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
@@ -46,13 +53,16 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func buildMultipartBody(audioData: Data, filename: String, boundary: String, model: String) -> Data {
+    private func buildMultipartBody(audioData: Data, filename: String, boundary: String, model: String, language: String?) -> Data {
         var body = Data()
         let CRLF = "\r\n"
-        body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"model\"\(CRLF)\(CRLF)\(model)\(CRLF)".data(using: .utf8)!)
-        body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"response_format\"\(CRLF)\(CRLF)text\(CRLF)".data(using: .utf8)!)
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\(CRLF)\(CRLF)\(value)\(CRLF)".data(using: .utf8)!)
+        }
+        field("model", model)
+        field("response_format", "text")
+        if let lang = language { field("language", lang) }
         body.append("--\(boundary)\(CRLF)".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\(CRLF)".data(using: .utf8)!)
         body.append("Content-Type: audio/wav\(CRLF)\(CRLF)".data(using: .utf8)!)

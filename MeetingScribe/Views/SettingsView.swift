@@ -37,6 +37,14 @@ struct SettingsView: View {
                     value: $modelSettings.noteModel,
                     presets: ModelSettings.noteModels
                 )
+                ModelField(
+                    label: "Language",
+                    value: $modelSettings.transcriptionLanguage,
+                    presets: ["ko", "en", "ja", "zh", ""]
+                )
+                Text("Language: BCP-47 code sent to Whisper (e.g. ko, en, ja). Empty = auto-detect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("Model selections are saved automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
