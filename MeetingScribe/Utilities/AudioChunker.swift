@@ -14,7 +14,7 @@ final class AudioChunker {
     private let samplesPerChunk: AVAudioFrameCount
     private let queue = DispatchQueue(label: "com.meetingscribe.audiochunker", qos: .userInitiated)
 
-    init(chunkDuration: Double = 30, outputDirectory: URL = FileManager.default.temporaryDirectory) {
+    init(chunkDuration: Double = 10, outputDirectory: URL = FileManager.default.temporaryDirectory) {
         self.chunkDuration = chunkDuration
         self.outputDirectory = outputDirectory
         self.samplesPerChunk = AVAudioFrameCount(16000 * chunkDuration)

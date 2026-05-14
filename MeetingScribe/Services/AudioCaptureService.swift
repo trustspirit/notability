@@ -2,7 +2,10 @@ import ScreenCaptureKit
 import AVFoundation
 import Combine
 
-final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStreamOutput, SCStreamDelegate {
+final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
+                                  SCStreamOutput, SCStreamDelegate,
+                                  AVCaptureAudioDataOutputSampleBufferDelegate {
+
     private var subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
     var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> {
         subject.eraseToAnyPublisher()
@@ -13,15 +16,17 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         levelSubject.eraseToAnyPublisher()
     }
 
+    // Whether system audio is being captured (requires Screen Recording permission).
+    // False if Screen Recording was denied — recording continues with microphone only.
+    private(set) var isCapturingSystemAudio = false
+
     private var stream: SCStream?
+    private var captureSession: AVCaptureSession?
     private var startDate: Date?
 
-    // Each source gets its own chunker so their audio is sent to Whisper separately —
-    // concatenating them into one buffer doubles the WAV duration and confuses transcription.
     private let systemAudioChunker = AudioChunker()
     private let micChunker = AudioChunker()
 
-    // Separate converters per source to avoid recreation on every alternating buffer.
     private var cachedAudioConverter: AVAudioConverter?
     private var cachedMicConverter: AVAudioConverter?
 
@@ -31,6 +36,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         channels: 1,
         interleaved: false
     )!
+
+    private let micQueue = DispatchQueue(label: "com.meetingscribe.mic", qos: .userInitiated)
 
     override init() {
         super.init()
@@ -46,19 +53,50 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
             try? await existing.stopCapture()
             stream = nil
         }
+        captureSession?.stopRunning()
+        captureSession = nil
         cachedAudioConverter = nil
         cachedMicConverter = nil
         subject = PassthroughSubject()
+        isCapturingSystemAudio = false
 
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        } catch {
-            print("[AudioCaptureService] SCShareableContent failed: \(error)")
-            throw CaptureError.permissionDenied
+        // Microphone via AVCaptureSession — only needs Microphone permission.
+        // This permission persists across app updates unlike Screen Recording.
+        startMicrophoneCapture()
+
+        // System audio via ScreenCaptureKit — needs Screen Recording permission.
+        // Non-fatal if denied: recording continues with microphone only.
+        await startSystemAudioCapture()
+
+        guard isCapturingSystemAudio || captureSession?.isRunning == true else {
+            throw CaptureError.noAudioSource
         }
-        guard let display = content.displays.first else {
-            throw CaptureError.noDisplay
+
+        startDate = Date()
+    }
+
+    private func startMicrophoneCapture() {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+              let mic = AVCaptureDevice.default(for: .audio) else { return }
+
+        let session = AVCaptureSession()
+        guard let input = try? AVCaptureDeviceInput(device: mic) else { return }
+        let output = AVCaptureAudioDataOutput()
+        output.setSampleBufferDelegate(self, queue: micQueue)
+
+        guard session.canAddInput(input), session.canAddOutput(output) else { return }
+        session.addInput(input)
+        session.addOutput(output)
+        session.startRunning()
+        captureSession = session
+    }
+
+    private func startSystemAudioCapture() async {
+        guard let display = try? await SCShareableContent
+            .excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            .displays.first else {
+            print("[AudioCaptureService] Screen Recording unavailable — mic only")
+            return
         }
 
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -66,50 +104,55 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         config.capturesAudio = true
         config.sampleRate = 16000
         config.channelCount = 1
-        if #available(macOS 15.0, *) {
-            config.captureMicrophone = true
-        }
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream?.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
-        if #available(macOS 15.0, *) {
-            try stream?.addStreamOutput(self, type: .microphone, sampleHandlerQueue: .global(qos: .userInitiated))
-        }
+        let s = SCStream(filter: filter, configuration: config, delegate: self)
         do {
-            try await stream?.startCapture()
+            try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
+            try await s.startCapture()
+            stream = s
+            isCapturingSystemAudio = true
         } catch {
-            stream = nil
-            print("[AudioCaptureService] startCapture failed: \(error)")
-            throw CaptureError.streamFailed(error)
+            print("[AudioCaptureService] System audio capture failed: \(error)")
         }
-        startDate = Date()
     }
 
     func stopCapture() async {
-        do {
-            try await stream?.stopCapture()
-        } catch {
+        do { try await stream?.stopCapture() } catch {
             print("[AudioCaptureService] Stream stop error: \(error)")
         }
         stream = nil
+        captureSession?.stopRunning()
+        captureSession = nil
         systemAudioChunker.flush()
         micChunker.flush()
         subject.send(completion: .finished)
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        let isMicrophone: Bool
-        if #available(macOS 15.0, *) {
-            guard type == .audio || type == .microphone else { return }
-            isMicrophone = (type == .microphone)
-        } else {
-            guard type == .audio else { return }
-            isMicrophone = false
-        }
+    // MARK: - SCStreamOutput (system audio)
 
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio else { return }
+        processBuffer(sampleBuffer, isMicrophone: false)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        systemAudioChunker.flush()
+        micChunker.flush()
+        subject.send(completion: .finished)
+    }
+
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate (microphone)
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        processBuffer(sampleBuffer, isMicrophone: true)
+    }
+
+    // MARK: - Shared processing
+
+    private func processBuffer(_ sampleBuffer: CMSampleBuffer, isMicrophone: Bool) {
         guard let formatDesc = sampleBuffer.formatDescription else { return }
         let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc)
 
@@ -140,16 +183,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
         if isMicrophone {
             micChunker.append(dstBuffer, timestamp: elapsed)
-            levelSubject.send(computeRMS(dstBuffer))
         } else {
             systemAudioChunker.append(dstBuffer, timestamp: elapsed)
         }
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        systemAudioChunker.flush()
-        micChunker.flush()
-        subject.send(completion: .finished)
+        // Drive waveform from whichever source is louder at any moment
+        levelSubject.send(computeRMS(dstBuffer))
     }
 
     private func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
@@ -162,9 +200,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol, SCStream
         return sqrt(sum / Float(buffer.frameLength))
     }
 
-    enum CaptureError: Error {
-        case noDisplay
-        case permissionDenied
-        case streamFailed(Error)
+    enum CaptureError: Error, LocalizedError {
+        case noAudioSource
+
+        var errorDescription: String? {
+            "Microphone access is required. Go to System Settings → Privacy → Microphone."
+        }
     }
 }

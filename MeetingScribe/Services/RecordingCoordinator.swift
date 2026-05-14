@@ -7,6 +7,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published var liveTranscript: [TranscriptChunk] = []
     @Published private(set) var audioLevel: Float = 0
+    @Published private(set) var systemAudioAvailable: Bool = true
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -47,6 +48,7 @@ final class RecordingCoordinator: ObservableObject {
 
         // Start capture first — only save meeting if it actually succeeds.
         try await audioCapture.startCapture()
+        systemAudioAvailable = (audioCapture as? AudioCaptureService)?.isCapturingSystemAudio ?? true
 
         let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
         let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)

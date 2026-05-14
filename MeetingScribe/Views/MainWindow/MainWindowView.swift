@@ -67,6 +67,25 @@ private struct LiveRecordingView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 8)
 
+            if !coordinator.systemAudioAvailable {
+                HStack(spacing: 6) {
+                    Image(systemName: "speaker.slash")
+                        .imageScale(.small)
+                    Text("System audio unavailable — only your voice is captured. Grant Screen Recording in System Settings for full meeting transcription.")
+                        .font(.caption)
+                    Spacer()
+                    Button("Open Settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Color.accentColor)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(.yellow.opacity(0.15))
+            }
+
             Divider()
 
             if coordinator.liveTranscript.isEmpty {
