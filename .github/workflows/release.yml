@@ -23,6 +23,16 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Get version info
+        id: info
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          BUILD=$(git rev-list --count HEAD)
+          printf 'tag=%s\n' "$TAG" >> $GITHUB_OUTPUT
+          printf 'version=%s\n' "$VERSION" >> $GITHUB_OUTPUT
+          printf 'build=%s\n' "$BUILD" >> $GITHUB_OUTPUT
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -33,6 +43,9 @@ jobs:
         run: xcodebuild -resolvePackageDependencies -project MeetingScribe.xcodeproj -scheme MeetingScribe
 
       - name: Build Release
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+          BUILD: ${{ steps.info.outputs.build }}
         run: |
           xcodebuild \
             -project MeetingScribe.xcodeproj \
@@ -42,17 +55,20 @@ jobs:
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_ALLOWED=YES \
             ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD" \
             build
 
-      - name: Get version info
-        id: info
+      - name: Verify app bundle version
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+          BUILD: ${{ steps.info.outputs.build }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          BUILD=$(git rev-list --count HEAD)
-          printf 'tag=%s\n' "$TAG" >> $GITHUB_OUTPUT
-          printf 'version=%s\n' "$VERSION" >> $GITHUB_OUTPUT
-          printf 'build=%s\n' "$BUILD" >> $GITHUB_OUTPUT
+          APP_INFO="build/DerivedData/Build/Products/Release/Notability.app/Contents/Info.plist"
+          APP_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_INFO")
+          APP_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_INFO")
+          test "$APP_VERSION" = "$VERSION"
+          test "$APP_BUILD" = "$BUILD"
 
       - name: Sign app bundle deeply
         run: |

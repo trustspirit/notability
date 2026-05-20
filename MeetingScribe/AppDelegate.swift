@@ -18,6 +18,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         userDriverDelegate: nil
     )
 
+    // Status icon updates fire every second during recording; pre-create the
+    // SF Symbol images once instead of allocating new NSImages each tick.
+    private lazy var statusIcons: [String: NSImage] = {
+        let names = ["mic", "mic.fill", "hourglass", "exclamationmark.circle"]
+        var dict: [String: NSImage] = [:]
+        for name in names {
+            if let image = NSImage(systemSymbolName: name, accessibilityDescription: name) {
+                dict[name] = image
+            }
+        }
+        return dict
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = MeetingStore()
         // Services read API key and model from Keychain/UserDefaults at each request —
@@ -63,34 +76,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon(state: RecordingState) {
         guard let button = statusItem.button else { return }
+        let icon: NSImage?
+        let isTemplate: Bool
+        let tint: NSColor?
+        let title: String
         switch state {
         case .idle:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Start recording")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.title = ""
+            icon = statusIcons["mic"]; isTemplate = true; tint = nil; title = ""
         case .recording(let elapsed):
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Recording")
-            button.image?.isTemplate = false
-            button.contentTintColor = .systemRed
+            icon = statusIcons["mic.fill"]; isTemplate = false; tint = .systemRed
             let mins = Int(elapsed) / 60
             let secs = Int(elapsed) % 60
-            button.title = " \(String(format: "%d:%02d", mins, secs))"
+            title = " \(String(format: "%d:%02d", mins, secs))"
         case .processing:
-            button.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Processing")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.title = ""
+            icon = statusIcons["hourglass"]; isTemplate = true; tint = nil; title = ""
         case .done:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Notes ready")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.title = ""
+            icon = statusIcons["mic"]; isTemplate = true; tint = nil; title = ""
         case .failed:
-            button.image = NSImage(systemSymbolName: "exclamationmark.circle", accessibilityDescription: "Note generation failed")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.title = ""
+            icon = statusIcons["exclamationmark.circle"]; isTemplate = true; tint = nil; title = ""
+        }
+        // Only reassign the image when it actually changes — repeatedly setting
+        // the same NSImage churns the SF Symbol cache that crashed in 1.3.0.
+        if button.image !== icon {
+            button.image = icon
+            button.image?.isTemplate = isTemplate
+        }
+        if button.contentTintColor != tint {
+            button.contentTintColor = tint
+        }
+        if button.title != title {
+            button.title = title
         }
         button.action = #selector(handleStatusBarClick)
         button.target = self
@@ -120,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Check for Updates\u{2026}", action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        statusItem.popUpMenu(menu)
+        popUpStatusBarMenu(menu)
     }
 
     private func showRecordingMenu() {
@@ -130,7 +145,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Open Notes", action: #selector(openNotes), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        statusItem.popUpMenu(menu)
+        popUpStatusBarMenu(menu)
+    }
+
+    // Modern replacement for the deprecated NSStatusItem.popUpMenu(_:). Anchors
+    // the menu just below the status item button, mirroring native behavior.
+    private func popUpStatusBarMenu(_ menu: NSMenu) {
+        guard let button = statusItem.button else { return }
+        let location = NSPoint(x: 0, y: button.bounds.height + 4)
+        menu.popUp(positioning: nil, at: location, in: button)
     }
 
     @objc private func checkForUpdates() {
@@ -222,11 +245,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = nil
         }
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
+        // Without this, AppKit releases the window when the user closes it,
+        // leaving `settingsWindow` as a dangling pointer that crashes
+        // (objc_retain) on the next openSettings() call.
+        window.isReleasedWhenClosed = false
         window.title = "Settings"
         window.contentView = NSHostingView(rootView: SettingsView())
         window.center()

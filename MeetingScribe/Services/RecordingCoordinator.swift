@@ -72,8 +72,11 @@ final class RecordingCoordinator: ObservableObject {
         recordingStart = Date()
         state = .recording(elapsed: 0)
 
+        // Audio buffers arrive 50–100 times per second; pushing every sample into
+        // SwiftUI saturates the main runloop and eventually corrupts AppKit/SwiftUI
+        // render state after several minutes of recording.
         levelCancellable = audioCapture.audioLevelPublisher
-            .receive(on: DispatchQueue.main)
+            .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] level in self?.audioLevel = level }
 
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
@@ -201,6 +204,14 @@ final class RecordingCoordinator: ObservableObject {
     private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, Self.isMeaningfulTranscript(trimmed) else { return }
+        // Realtime API streams cumulative deltas — many consecutive partials are
+        // identical strings. Skip redundant @Published writes to avoid pointless
+        // SwiftUI re-layout work on every websocket event.
+        if livePartialTranscriptToken == token,
+           livePartialTranscript?.text == trimmed,
+           livePartialTranscript?.timestamp == timestamp {
+            return
+        }
         livePartialTranscriptToken = token
         livePartialTranscript = TranscriptChunk(timestamp: timestamp, text: trimmed)
         updateVisibleLiveTranscript()
@@ -215,10 +226,15 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func updateVisibleLiveTranscript() {
-        var rows = rawTranscriptChunks
-        if let livePartialTranscript {
-            rows.append(livePartialTranscript)
+        // Fast path: no partial means visibleLiveTranscript is exactly liveTranscript,
+        // which addTranscriptChunk has already merged. Avoid a second O(N) merge pass
+        // on every chunk add.
+        guard let partial = livePartialTranscript else {
+            visibleLiveTranscript = liveTranscript
+            return
         }
+        var rows = rawTranscriptChunks
+        rows.append(partial)
         visibleLiveTranscript = Self.mergedTranscriptRows(from: rows)
     }
 
