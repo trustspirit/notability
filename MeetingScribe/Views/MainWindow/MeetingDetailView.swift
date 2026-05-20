@@ -4,72 +4,142 @@ import AppKit
 struct MeetingDetailView: View {
     let meeting: Meeting
     @EnvironmentObject var store: MeetingStore
-    @State private var selectedTab = 0
+    @State private var selectedTab: DetailTab = .summary
     @State private var titleInput = ""
+
+    enum DetailTab: Hashable {
+        case summary, actions, decisions, transcript
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading) {
-                    TextField("Meeting title", text: $titleInput)
-                        .font(.title2.bold())
-                        .textFieldStyle(.plain)
-                        .onSubmit { commitTitle() }
-                    (Text(meeting.date, style: .date) + Text(" · ") + Text(formatDuration(meeting.durationSeconds)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if meeting.notes != nil {
-                    Button {
-                        copyNotes()
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .help("Copy all notes to clipboard")
-                    .buttonStyle(.borderless)
-                }
-            }
-            .padding()
-
-            Divider()
-
-            if let notes = meeting.notes {
-                TabView(selection: $selectedTab) {
-                    SummaryTabView(summary: notes.summary)
-                        .tabItem { Label("Summary", systemImage: "text.alignleft") }
-                        .tag(0)
-                    ActionItemsTabView(items: notes.actionItems) { itemId in
-                        store.toggleActionItemCompleted(meetingId: meeting.id, itemId: itemId)
-                    }
-                    .tabItem { Label("Action Items", systemImage: "checkmark.circle") }
-                    .tag(1)
-                    KeyDecisionsTabView(decisions: notes.keyDecisions)
-                        .tabItem { Label("Decisions", systemImage: "arrow.triangle.branch") }
-                        .tag(2)
-                    TranscriptTabView(chunks: meeting.transcript)
-                        .tabItem { Label("Transcript", systemImage: "text.bubble") }
-                        .tag(3)
-                }
-                .padding()
-            } else if let error = meeting.notesGenerationError {
-                ContentUnavailableView(
-                    "Note generation failed",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(error)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text("Generating notes…")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            header
+            Divider().opacity(0.5)
+            tabBar
+            content
         }
+        .background(BrandColor.surfaceElevated)
         .onAppear { titleInput = meeting.title }
         .onChange(of: meeting.title) { _, new in titleInput = new }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                TextField("Meeting title", text: $titleInput)
+                    .font(.title.weight(.bold))
+                    .textFieldStyle(.plain)
+                    .onSubmit { commitTitle() }
+                HStack(spacing: Spacing.sm) {
+                    Label(meeting.date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                    Label(formatDuration(meeting.durationSeconds), systemImage: "clock")
+                    if meeting.notes == nil && meeting.notesGenerationError == nil {
+                        Pill(text: "Generating", systemImage: "sparkles", tint: BrandColor.warning)
+                    } else if meeting.notesGenerationError != nil {
+                        Pill(text: "Failed", systemImage: "exclamationmark.triangle.fill", tint: BrandColor.warning)
+                    } else {
+                        Pill(text: "Notes ready", systemImage: "checkmark.circle.fill", tint: BrandColor.success)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if meeting.notes != nil {
+                Button {
+                    copyNotes()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .help("Copy all notes to clipboard")
+            }
+        }
+        .padding(Spacing.lg)
+    }
+
+    // MARK: - Tab bar
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(.summary, title: "Summary", systemImage: "text.alignleft", shortcut: "1")
+            tabButton(.actions, title: "Action Items", systemImage: "checkmark.circle", count: meeting.notes?.actionItems.count, shortcut: "2")
+            tabButton(.decisions, title: "Decisions", systemImage: "arrow.triangle.branch", count: meeting.notes?.keyDecisions.count, shortcut: "3")
+            tabButton(.transcript, title: "Transcript", systemImage: "text.bubble", count: meeting.transcript.count, shortcut: "4")
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.lg)
+        .padding(.top, Spacing.sm)
+    }
+
+    @ViewBuilder
+    private func tabButton(_ tab: DetailTab, title: String, systemImage: String, count: Int? = nil, shortcut: KeyEquivalent? = nil) -> some View {
+        let isActive = selectedTab == tab
+        Button {
+            selectedTab = tab
+        } label: {
+            VStack(spacing: 6) {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: systemImage)
+                    Text(title)
+                        .fontWeight(isActive ? .semibold : .regular)
+                    if let count, count > 0 {
+                        Text("\(count)")
+                            .font(.caption2.monospacedDigit())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule().fill(isActive ? BrandColor.accent.opacity(0.18) : Color.secondary.opacity(0.12))
+                            )
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(isActive ? BrandColor.accent : Color.secondary)
+
+                Rectangle()
+                    .fill(isActive ? BrandColor.accent : .clear)
+                    .frame(height: 2)
+            }
+            .padding(.horizontal, Spacing.md)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(OptionalShortcut(key: shortcut))
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        if let notes = meeting.notes {
+            switch selectedTab {
+            case .summary:
+                SummaryTabView(summary: notes.summary)
+            case .actions:
+                ActionItemsTabView(items: notes.actionItems) { itemId in
+                    store.toggleActionItemCompleted(meetingId: meeting.id, itemId: itemId)
+                }
+            case .decisions:
+                KeyDecisionsTabView(decisions: notes.keyDecisions)
+            case .transcript:
+                TranscriptTabView(chunks: meeting.transcript)
+            }
+        } else if let error = meeting.notesGenerationError {
+            BrandedEmptyState(
+                title: "Note generation failed",
+                systemImage: "exclamationmark.triangle.fill",
+                message: error
+            )
+        } else {
+            BrandedEmptyState(
+                title: "Generating notes…",
+                systemImage: "sparkles",
+                message: "Notability is summarizing your meeting. This usually takes under a minute."
+            )
+        }
     }
 
     private func commitTitle() {
@@ -106,6 +176,20 @@ struct MeetingDetailView: View {
     private func formatDuration(_ seconds: Double) -> String {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
+        if mins == 0 { return "\(secs)s" }
         return "\(mins)m \(secs)s"
+    }
+}
+
+// macOS-style shortcut helper — only applies the modifier when a key is provided.
+private struct OptionalShortcut: ViewModifier {
+    let key: KeyEquivalent?
+
+    func body(content: Content) -> some View {
+        if let key {
+            content.keyboardShortcut(key, modifiers: [.command])
+        } else {
+            content
+        }
     }
 }

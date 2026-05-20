@@ -5,31 +5,23 @@ struct TranscriptTabView: View {
 
     var body: some View {
         if chunks.isEmpty {
-            ContentUnavailableView("No transcript", systemImage: "text.bubble")
+            BrandedEmptyState(
+                title: "No transcript",
+                systemImage: "text.bubble",
+                message: "Audio capture didn't produce a transcript for this meeting."
+            )
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(formatTimestamp(chunk.timestamp))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 48, alignment: .trailing)
-                                .padding(.top, 1)
-                            Text(chunk.text)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: Spacing.md) {
+                    SectionTitle(text: "\(chunks.count) segment\(chunks.count == 1 ? "" : "s")")
+                    LazyVStack(alignment: .leading, spacing: Spacing.sm) {
+                        ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                            TranscriptRow(timestamp: chunk.timestamp, text: chunk.text)
                         }
                     }
                 }
-                .padding()
+                .padding(Spacing.lg)
             }
         }
-    }
-
-    private func formatTimestamp(_ seconds: TimeInterval) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
-        return "\(m):\(String(format: "%02d", s))"
     }
 }

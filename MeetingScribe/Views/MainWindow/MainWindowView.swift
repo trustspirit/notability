@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MainWindowView: View {
     @EnvironmentObject var store: MeetingStore
@@ -8,21 +9,30 @@ struct MainWindowView: View {
     var body: some View {
         NavigationSplitView {
             MeetingSidebarView(selectedMeetingId: $selectedMeetingId)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 400)
         } detail: {
             if case .recording = coordinator.state {
                 LiveRecordingView()
             } else if let id = selectedMeetingId, let meeting = store.fetch(id: id) {
                 MeetingDetailView(meeting: meeting)
+                    .id(meeting.id)  // force fresh @State (selectedTab, titleInput) per meeting
+            } else if case .processing = coordinator.state {
+                BrandedEmptyState(
+                    title: "Generating notes…",
+                    systemImage: "sparkles",
+                    message: "We're turning your conversation into structured notes."
+                )
             } else {
-                ContentUnavailableView(
-                    "Select a meeting",
-                    systemImage: "mic.circle",
-                    description: Text("Your meeting notes will appear here.")
+                BrandedEmptyState(
+                    title: store.allMeetings.isEmpty ? "Welcome to Notability" : "Select a meeting",
+                    systemImage: store.allMeetings.isEmpty ? "waveform.circle" : "list.bullet",
+                    message: store.allMeetings.isEmpty
+                        ? "Press the Record button to capture your first meeting. Notability transcribes audio and generates a summary, action items, and decisions."
+                        : "Pick a meeting from the sidebar to view its summary and action items."
                 )
             }
         }
-        .frame(minWidth: 700, minHeight: 500)
+        .frame(minWidth: 820, minHeight: 560)
         .toolbar(removing: .sidebarToggle)
         .onChange(of: coordinator.state) { _, newState in
             switch newState {
@@ -38,131 +48,145 @@ struct MainWindowView: View {
     }
 }
 
+// MARK: - Live recording
+
 private struct LiveRecordingView: View {
     @EnvironmentObject var coordinator: RecordingCoordinator
 
     var body: some View {
-        let transcriptRows = visibleTranscriptRows
+        let transcriptRows = coordinator.visibleLiveTranscript
 
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 8, height: 8)
+            header
+            Divider().opacity(0.5)
+            waveform
+            if !coordinator.systemAudioAvailable {
+                systemAudioBanner
+            }
+            transcriptArea(rows: transcriptRows)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(BrandColor.surfaceElevated)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: Spacing.md) {
+            PulsingDot(color: BrandColor.recording, size: 10)
+                .padding(.leading, Spacing.xs)
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Recording")
-                    .font(.title2.bold())
+                    .font(.title2.weight(.bold))
                 if case .recording(let elapsed) = coordinator.state {
                     Text(formatElapsed(elapsed))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !coordinator.liveTranscript.isEmpty {
-                    Text("\(coordinator.liveTranscript.filter { !isTranscriptionFailure($0.text) }.count) segments")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if coordinator.pendingTranscriptionCount > 0 {
-                    Text("Transcribing…")
-                        .font(.caption)
+                        .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding()
+            Spacer()
+            HStack(spacing: Spacing.sm) {
+                let validCount = coordinator.liveTranscript.filter { !isTranscriptionFailure($0.text) }.count
+                if validCount > 0 {
+                    Pill(text: "\(validCount) segment\(validCount == 1 ? "" : "s")", systemImage: "text.bubble", tint: BrandColor.accent)
+                }
+                if coordinator.pendingTranscriptionCount > 0 {
+                    Pill(text: "Transcribing", systemImage: "waveform", tint: BrandColor.accent)
+                }
+                Button {
+                    Task { await coordinator.stopRecording() }
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(BrandColor.recording)
+                .controlSize(.regular)
+                .keyboardShortcut(".", modifiers: [.command])
+            }
+        }
+        .padding(Spacing.lg)
+    }
 
-            WaveformBarsView(level: coordinator.audioLevel)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
+    private var waveform: some View {
+        WaveformBarsView(level: coordinator.audioLevel)
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+    }
 
-            if !coordinator.systemAudioAvailable {
-                HStack(spacing: 6) {
-                    Image(systemName: "speaker.slash")
-                        .imageScale(.small)
-                    Text("System audio unavailable — only your voice is captured. Grant Screen Recording in System Settings for full meeting transcription.")
-                        .font(.caption)
-                    Spacer()
-                    Button("Open Settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                    }
+    private var systemAudioBanner: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "speaker.slash.fill")
+                .foregroundStyle(BrandColor.warning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("System audio unavailable")
+                    .font(.caption.weight(.semibold))
+                Text("Only your microphone is being captured. Grant Screen Recording in System Settings for full meeting transcription.")
                     .font(.caption)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Color.accentColor)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 6)
-                .background(.yellow.opacity(0.15))
+                    .foregroundStyle(.secondary)
             }
+            Spacer()
+            Button("Open Settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            }
+            .controlSize(.small)
+        }
+        .padding(Spacing.md)
+        .background(BrandColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                .strokeBorder(BrandColor.warning.opacity(0.25), lineWidth: 0.5)
+        )
+        .padding(.horizontal, Spacing.lg)
+    }
 
-            Divider()
-
-            if transcriptRows.isEmpty {
-                ContentUnavailableView(
-                    coordinator.pendingTranscriptionCount > 0 ? "Transcribing…" : "Listening…",
-                    systemImage: coordinator.pendingTranscriptionCount > 0 ? "text.bubble" : "waveform",
-                    description: Text(coordinator.pendingTranscriptionCount > 0 ? "Transcript will appear when the current audio chunk finishes." : "Transcript will appear as speech is detected.")
-                )
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(Array(transcriptRows.enumerated()), id: \.offset) { index, chunk in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(formatTimestamp(chunk.timestamp))
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 48, alignment: .trailing)
-                                        .padding(.top, 1)
-                                    if isTranscriptionFailure(chunk.text) {
-                                        Text(chunk.text)
-                                            .foregroundStyle(.secondary)
-                                            .italic()
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    } else {
-                                        Text(chunk.text)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                }
+    @ViewBuilder
+    private func transcriptArea(rows: [TranscriptChunk]) -> some View {
+        if rows.isEmpty {
+            BrandedEmptyState(
+                title: coordinator.pendingTranscriptionCount > 0 ? "Transcribing…" : "Listening…",
+                systemImage: coordinator.pendingTranscriptionCount > 0 ? "text.bubble" : "waveform",
+                message: coordinator.pendingTranscriptionCount > 0
+                    ? "Transcript will appear when the current audio chunk finishes."
+                    : "Start speaking and Notability will transcribe in real time."
+            )
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Spacing.sm) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { index, chunk in
+                            TranscriptRow(timestamp: chunk.timestamp, text: chunk.text, isFailure: isTranscriptionFailure(chunk.text))
                                 .id(index)
-                            }
                         }
-                        .padding()
                     }
-                    .onChange(of: coordinator.liveTranscript.count) { _, _ in
-                        scrollToLast(proxy)
-                    }
-                    .onChange(of: coordinator.livePartialTranscript?.text ?? "") { _, _ in
-                        scrollToLast(proxy)
-                    }
+                    .padding(Spacing.lg)
+                }
+                .onChange(of: coordinator.liveTranscript.count) { _, _ in
+                    scrollToLast(proxy, total: rows.count)
+                }
+                .onChange(of: coordinator.livePartialTranscript?.text ?? "") { _, _ in
+                    scrollToLast(proxy, total: rows.count)
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func scrollToLast(_ proxy: ScrollViewProxy, total: Int) {
+        let lastIndex = total - 1
+        guard lastIndex >= 0 else { return }
+        // No withAnimation: partial-transcript updates are very frequent and
+        // overlapping scroll animations were a measurable layout-engine pressure.
+        proxy.scrollTo(lastIndex, anchor: .bottom)
     }
 
     private func formatElapsed(_ t: TimeInterval) -> String {
         "\(Int(t) / 60):\(String(format: "%02d", Int(t) % 60))"
     }
 
-    private func formatTimestamp(_ t: TimeInterval) -> String {
-        let m = Int(t) / 60
-        let s = Int(t) % 60
-        return "\(m):\(String(format: "%02d", s))"
-    }
-
     private func isTranscriptionFailure(_ text: String) -> Bool {
         text.hasPrefix("[transcription failed")
     }
-
-    private var visibleTranscriptRows: [TranscriptChunk] {
-        coordinator.visibleLiveTranscript
-    }
-
-    private func scrollToLast(_ proxy: ScrollViewProxy) {
-        let lastIndex = visibleTranscriptRows.count - 1
-        if lastIndex >= 0 {
-            withAnimation { proxy.scrollTo(lastIndex, anchor: .bottom) }
-        }
-    }
 }
+
+// MARK: - Waveform
 
 private struct WaveformBarsView: View {
     let level: Float
@@ -172,24 +196,33 @@ private struct WaveformBarsView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(0..<barCount, id: \.self) { i in
-                // Fade bars near the edges for a natural look
                 let edgeFade = edgeOpacity(i)
                 Capsule()
-                    .fill(.red.opacity(0.8 * edgeFade))
-                    .frame(width: 3, height: max(2, CGFloat(history[i]) * 40 + 2))
+                    .fill(BrandColor.recording.opacity(0.75 * edgeFade))
+                    .frame(width: 3, height: max(2, CGFloat(history[i]) * 44 + 2))
             }
         }
-        .frame(height: 44)
+        .frame(maxWidth: .infinity)
+        .frame(height: 56)
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.sm)
+        .background(BrandColor.surface, in: RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                .strokeBorder(BrandColor.border, lineWidth: 0.5)
+        )
         .onChange(of: level) { _, newLevel in
-            withAnimation(.linear(duration: 0.1)) {
-                history.removeFirst()
-                history.append(min(1.0, newLevel * 12))
-            }
+            // Throttling upstream (~20Hz) already produces a smooth-enough cadence.
+            // Removing the implicit animation avoids overlapping animation queues
+            // that previously pressured the SwiftUI layout engine over time.
+            history.removeFirst()
+            history.append(min(1.0, newLevel * 12))
         }
+        .animation(.easeOut(duration: 0.05), value: history)
     }
 
     private func edgeOpacity(_ index: Int) -> Double {
-        let fadeZone = 8 // number of bars to fade on each side
+        let fadeZone = 8
         if index < fadeZone {
             return Double(index + 1) / Double(fadeZone + 1)
         } else if index >= barCount - fadeZone {

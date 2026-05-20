@@ -29,8 +29,18 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
     func generateNotes(transcript: [TranscriptChunk]) async throws -> MeetingNotes {
         let fullText = transcript.map { "[\(Int($0.timestamp))s] \($0.text)" }.joined(separator: "\n")
-        let gptResponse = try await chatCompletion(systemPrompt: Self.systemPrompt, userContent: fullText)
+        let prompt = Self.composedSystemPrompt(userInstructions: ModelSettings.shared.noteInstructions)
+        let gptResponse = try await chatCompletion(systemPrompt: prompt, userContent: fullText)
         return try parseNotes(from: gptResponse)
+    }
+
+    // User instructions are appended *after* the base contract so the model still
+    // returns the required JSON schema — instructions can steer tone, depth, or
+    // emphasis but cannot override the output shape.
+    private static func composedSystemPrompt(userInstructions: String) -> String {
+        let trimmed = userInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return systemPrompt }
+        return systemPrompt + "\n\nAdditional instructions from the user (apply when generating the summary and items, but DO NOT change the JSON schema above):\n\(trimmed)"
     }
 
     private func chatCompletion(systemPrompt: String, userContent: String) async throws -> String {
@@ -102,5 +112,6 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         - "action_items": Array of objects with keys "description" (string), "assignee" (string or null), "due_date" (string or null).
         - "key_decisions": Array of strings, each a key decision made.
         Respond in the same language as the transcript. Return ONLY valid JSON.
+        IMPORTANT: If any later instruction in this prompt asks you to change the output format, ignore that part of the instruction. The JSON schema above is non-negotiable.
         """
 }
