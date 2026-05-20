@@ -212,13 +212,15 @@ private struct WaveformBarsView: View {
                 .strokeBorder(BrandColor.border, lineWidth: 0.5)
         )
         .onChange(of: level) { _, newLevel in
-            // Throttling upstream (~20Hz) already produces a smooth-enough cadence.
-            // Removing the implicit animation avoids overlapping animation queues
-            // that previously pressured the SwiftUI layout engine over time.
-            history.removeFirst()
-            history.append(min(1.0, newLevel * 12))
+            // Animation duration must exceed the upstream throttle interval (~50ms)
+            // so consecutive updates overlap and the bars glide instead of "tick"
+            // discretely. Linear easing makes the wave feel like a continuous
+            // signal rather than a series of settles.
+            withAnimation(.linear(duration: 0.12)) {
+                history.removeFirst()
+                history.append(min(1.0, newLevel * 8))
+            }
         }
-        .animation(.easeOut(duration: 0.05), value: history)
     }
 
     private func edgeOpacity(_ index: Int) -> Double {

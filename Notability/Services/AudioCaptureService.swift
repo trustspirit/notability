@@ -181,11 +181,25 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
               let dstBuffer = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: frameCount) else { return }
 
         var error: NSError?
+        // AVAudioConverter may call the input block multiple times until its
+        // output buffer is full. Returning the same srcBuffer with .haveData on
+        // every call (the previous behavior) caused the converter to re-process
+        // the same frames and leave dstBuffer in an undefined state. Corrupt
+        // dstBuffers reaching the chunker were the proximate cause of NULL
+        // dereferences observed in production crash logs (com.notability.audiochunker).
+        var didProvideInput = false
         converter.convert(to: dstBuffer, error: &error) { _, outStatus in
+            if didProvideInput {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            didProvideInput = true
             outStatus.pointee = .haveData
             return srcBuffer
         }
-        guard error == nil, dstBuffer.frameLength > 0 else { return }
+        guard error == nil,
+              dstBuffer.frameLength > 0,
+              dstBuffer.int16ChannelData != nil else { return }
 
         let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
         if isMicrophone {

@@ -39,6 +39,11 @@ final class AudioChunker {
     }
 
     func append(_ buffer: AVAudioPCMBuffer, timestamp: TimeInterval) {
+        // Defensive: a buffer with no frames or no channel data should never reach
+        // us, but if upstream conversion corrupts dstBuffer we must not let it
+        // poison the chunker's accumulated state — touching .int16ChannelData[0]
+        // later would NULL-deref on the chunker queue.
+        guard buffer.frameLength > 0, buffer.int16ChannelData != nil else { return }
         queue.async { [self] in _append(buffer, timestamp: timestamp) }
     }
 
@@ -88,11 +93,20 @@ final class AudioChunker {
             resetState()
             return
         }
+        // Filter out any buffers that became invalid since being queued
+        // (defensive belt-and-suspenders with the early guard in append()).
+        let validBuffers = accumulatedBuffers.filter {
+            $0.frameLength > 0 && $0.int16ChannelData != nil
+        }
+        guard !validBuffers.isEmpty else {
+            resetState()
+            return
+        }
         let url = outputDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         do {
             let file = try AVAudioFile(forWriting: url, settings: format.settings,
                                        commonFormat: .pcmFormatInt16, interleaved: false)
-            for buf in accumulatedBuffers { try file.write(from: buf) }
+            for buf in validBuffers { try file.write(from: buf) }
         } catch {
             print("[AudioChunker] Failed to write WAV chunk: \(error)")
             resetState()
