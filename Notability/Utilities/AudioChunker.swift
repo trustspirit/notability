@@ -10,7 +10,7 @@ final class AudioChunker {
     private var consecutiveSilentFrames: AVAudioFrameCount = 0
     private var chunkStartTimestamp: TimeInterval = 0
     private var isFirstBuffer = true
-    private let queue = DispatchQueue(label: "com.meetingscribe.audiochunker", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.notability.audiochunker", qos: .userInitiated)
 
     // Emit when silence lasts this long AND minimum chunk duration is met.
     // 0.6 s of quiet = natural sentence/breath boundary.

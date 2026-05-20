@@ -29,7 +29,7 @@ if [ -n "$PUBLIC_KEY" ]; then
   echo ""
   echo "=== Next steps ==="
   echo ""
-  echo "1. Add to MeetingScribe/Info.plist:"
+  echo "1. Add to Notability/Info.plist:"
   echo "   <key>SUPublicEDKey</key>"
   echo "   <string>${PUBLIC_KEY}</string>"
   echo ""

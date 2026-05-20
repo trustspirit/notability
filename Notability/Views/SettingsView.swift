@@ -8,7 +8,7 @@ struct SettingsView: View {
     @State private var keyIsSaved = false
     @ObservedObject private var modelSettings = ModelSettings.shared
 
-    private let keychainKey = "com.meetingscribe.openai-api-key"
+    private let keychainKey = "com.notability.openai-api-key"
 
     var body: some View {
         ScrollView {
@@ -22,7 +22,7 @@ struct SettingsView: View {
         .frame(width: 520, height: 640)
         .background(BrandColor.surfaceElevated)
         .onAppear {
-            let stored = KeychainHelper.load(forKey: keychainKey) ?? ""
+            let stored = CredentialsStore.load(forKey: keychainKey) ?? ""
             apiKey = stored
             keyIsSaved = !stored.isEmpty
         }
@@ -56,7 +56,7 @@ struct SettingsView: View {
 
                     HStack(spacing: Spacing.sm) {
                         Button {
-                            KeychainHelper.save(apiKey, forKey: keychainKey)
+                            CredentialsStore.save(apiKey, forKey: keychainKey)
                             keyIsSaved = true
                             saved = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
@@ -68,7 +68,7 @@ struct SettingsView: View {
 
                         if keyIsSaved {
                             Button(role: .destructive) {
-                                KeychainHelper.delete(forKey: keychainKey)
+                                CredentialsStore.delete(forKey: keychainKey)
                                 apiKey = ""
                                 keyIsSaved = false
                             } label: {
@@ -85,7 +85,7 @@ struct SettingsView: View {
                         Spacer()
                     }
 
-                    Text("Your key is stored securely in the macOS Keychain.")
+                    Text("Stored in ~/Library/Application Support/Notability/ with owner-only file permissions.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

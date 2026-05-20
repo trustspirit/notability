@@ -11,8 +11,33 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
 
     init(storageDirectory: URL = MeetingStore.defaultDirectory) {
         self.storageDirectory = storageDirectory
+        Self.migrateLegacyStorageIfNeeded(target: storageDirectory)
         try? FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
         loadAll()
+    }
+
+    // Pre-rebrand the app stored meetings under "MeetingScribe/meetings/". Move
+    // them into the new "Notability/meetings/" location on first launch so users
+    // upgrading from older versions don't appear to lose their history.
+    private static func migrateLegacyStorageIfNeeded(target: URL) {
+        let fm = FileManager.default
+        let legacy = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MeetingScribe/meetings")
+        guard fm.fileExists(atPath: legacy.path), legacy.path != target.path else { return }
+        if !fm.fileExists(atPath: target.path) {
+            try? fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.moveItem(at: legacy, to: target)
+            return
+        }
+        // Target exists — copy over any meetings not yet present, then drop the legacy folder.
+        let items = (try? fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil)) ?? []
+        for item in items {
+            let dest = target.appendingPathComponent(item.lastPathComponent)
+            if !fm.fileExists(atPath: dest.path) {
+                try? fm.copyItem(at: item, to: dest)
+            }
+        }
+        try? fm.removeItem(at: legacy)
     }
 
     func save(_ meeting: Meeting) {
@@ -78,6 +103,6 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
 
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MeetingScribe/meetings")
+            .appendingPathComponent("Notability/meetings")
     }
 }

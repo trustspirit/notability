@@ -190,10 +190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Toggling the switch OFF → ON re-associates the permission with the
         // current binary and resolves the issue.
         alert.informativeText = """
-            MeetingScribe needs Screen Recording access to capture audio.
+            Notability needs Screen Recording access to capture audio.
 
             In System Settings → Privacy & Security → Screen Recording:
-            • If MeetingScribe is not listed → add it, then relaunch
+            • If Notability is not listed → add it, then relaunch
             • If it is already enabled → toggle OFF, then ON, then relaunch
             """
         alert.addButton(withTitle: "Open Settings & Relaunch")
@@ -213,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .denied, .restricted:
             let alert = NSAlert()
             alert.messageText = "Microphone Access Required"
-            alert.informativeText = "MeetingScribe needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable MeetingScribe, then relaunch."
+            alert.informativeText = "Notability needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable Notability, then relaunch."
             alert.addButton(withTitle: "Open Settings & Relaunch")
             alert.addButton(withTitle: "Later")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -273,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "MeetingScribe"
+            window.title = "Notability"
             window.contentView = NSHostingView(rootView: contentView)
             window.center()
             window.setFrameAutosaveName("MainWindow")

@@ -1,6 +1,6 @@
 import XCTest
 import AVFoundation
-@testable import MeetingScribe
+@testable import Notability
 
 final class AudioChunkerTests: XCTestCase {
     var tempDir: URL!

@@ -1,6 +1,6 @@
-name: MeetingScribe
+name: Notability
 options:
-  bundleIdPrefix: com.meetingscribe
+  bundleIdPrefix: com.notability
   deploymentTarget:
     macOS: "14.0"
   xcodeVersion: "15.0"
@@ -19,18 +19,18 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
-  MeetingScribe:
+  Notability:
     type: application
     platform: macOS
     sources:
-      - MeetingScribe
+      - Notability
     settings:
       base:
-        INFOPLIST_FILE: MeetingScribe/Info.plist
-        CODE_SIGN_ENTITLEMENTS: MeetingScribe/MeetingScribe.entitlements
+        INFOPLIST_FILE: Notability/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Notability/Notability.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.notability.app
         PRODUCT_NAME: Notability
-        PRODUCT_MODULE_NAME: MeetingScribe
+        PRODUCT_MODULE_NAME: Notability
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - sdk: ScreenCaptureKit.framework
@@ -38,27 +38,27 @@ targets:
       - package: Sparkle
         product: Sparkle
 
-  MeetingScribeTests:
+  NotabilityTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - MeetingScribeTests
+      - NotabilityTests
     dependencies:
-      - target: MeetingScribe
+      - target: Notability
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.meetingscribe.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.notability.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Notability.app/Contents/MacOS/Notability"
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
-  MeetingScribe:
+  Notability:
     build:
       targets:
-        MeetingScribe: all
-        MeetingScribeTests: [test]
+        Notability: all
+        NotabilityTests: [test]
     test:
       targets:
-        - MeetingScribeTests
+        - NotabilityTests
       config: Debug

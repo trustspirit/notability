@@ -1,18 +1,18 @@
 import XCTest
-@testable import MeetingScribe
+@testable import Notability
 
 final class TranscriptionServiceTests: XCTestCase {
-    private let keychainKey = "com.meetingscribe.openai-api-key"
+    private let keychainKey = "com.notability.openai-api-key"
 
     override func setUp() async throws {
-        KeychainHelper.save("sk-test", forKey: keychainKey)
+        CredentialsStore.save("sk-test", forKey: keychainKey)
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
         ModelSettings.shared.transcriptionLanguage = "ko"
     }
 
     override func tearDown() async throws {
-        KeychainHelper.delete(forKey: keychainKey)
+        CredentialsStore.delete(forKey: keychainKey)
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
         ModelSettings.shared.transcriptionLanguage = "ko"

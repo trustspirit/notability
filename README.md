@@ -1,4 +1,4 @@
-# MeetingScribe
+# Notability
 
 A macOS menu bar app that captures system audio from any meeting tool — Zoom, Google Meet, Teams — without plugins, and uses AI to automatically generate meeting notes.
 
@@ -62,7 +62,7 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 | Audio encoding | AVFoundation |
 | Transcription | OpenAI Audio API (`gpt-4o-transcribe`) or Realtime API (`gpt-realtime-whisper`) |
 | Note generation | OpenAI gpt-5.5 |
-| Storage | Local JSON (`~/Library/Application Support/MeetingScribe`) |
+| Storage | Local JSON (`~/Library/Application Support/Notability`) |
 | API key | macOS Keychain |
 
 ## Building from Source
@@ -74,7 +74,7 @@ brew install xcodegen
 git clone https://github.com/trustspirit/notability
 cd notability
 xcodegen generate
-open MeetingScribe.xcodeproj
+open Notability.xcodeproj
 ```
 
 ## Privacy

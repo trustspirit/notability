@@ -1,15 +1,15 @@
 import XCTest
-@testable import MeetingScribe
+@testable import Notability
 
 final class NoteGenerationServiceTests: XCTestCase {
-    private let keychainKey = "com.meetingscribe.openai-api-key"
+    private let keychainKey = "com.notability.openai-api-key"
 
     override func setUp() async throws {
-        KeychainHelper.save("sk-test", forKey: keychainKey)
+        CredentialsStore.save("sk-test", forKey: keychainKey)
     }
 
     override func tearDown() async throws {
-        KeychainHelper.delete(forKey: keychainKey)
+        CredentialsStore.delete(forKey: keychainKey)
     }
 
     func test_generates_notes_from_transcript() async throws {

@@ -1,6 +1,6 @@
 import XCTest
 import Combine
-@testable import MeetingScribe
+@testable import Notability
 
 @MainActor
 final class RecordingCoordinatorTests: XCTestCase {

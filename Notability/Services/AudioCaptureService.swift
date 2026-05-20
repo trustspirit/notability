@@ -38,7 +38,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         interleaved: false
     )!
 
-    private let micQueue = DispatchQueue(label: "com.meetingscribe.mic", qos: .userInitiated)
+    private let micQueue = DispatchQueue(label: "com.notability.mic", qos: .userInitiated)
 
     override init() {
         super.init()

@@ -1,5 +1,5 @@
 import Foundation
-@testable import MeetingScribe
+@testable import Notability
 
 final class MockHTTPClient: HTTPClient {
     let responseData: Data

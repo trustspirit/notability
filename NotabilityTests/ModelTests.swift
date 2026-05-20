@@ -1,5 +1,5 @@
 import XCTest
-@testable import MeetingScribe
+@testable import Notability
 
 final class ModelTests: XCTestCase {
     func test_meeting_codable_roundtrip() throws {

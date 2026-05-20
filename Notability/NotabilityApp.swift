@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct MeetingScribeApp: App {
+struct NotabilityApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

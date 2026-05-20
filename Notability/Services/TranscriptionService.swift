@@ -48,7 +48,7 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         prompt: String? = nil,
         onPartialTranscript: TranscriptionPartialHandler? = nil
     ) async throws -> TranscriptChunk {
-        guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
+        guard let apiKey = CredentialsStore.load(forKey: "com.notability.openai-api-key"), !apiKey.isEmpty else {
             throw APIError.missingAPIKey
         }
 

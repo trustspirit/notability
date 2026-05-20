@@ -1,7 +1,7 @@
-// MeetingScribeTests/MeetingStoreTests.swift
+// NotabilityTests/MeetingStoreTests.swift
 import XCTest
 import Combine
-@testable import MeetingScribe
+@testable import Notability
 
 final class MeetingStoreTests: XCTestCase {
     var sut: MeetingStore!

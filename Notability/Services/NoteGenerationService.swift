@@ -44,7 +44,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
     }
 
     private func chatCompletion(systemPrompt: String, userContent: String) async throws -> String {
-        guard let apiKey = KeychainHelper.load(forKey: "com.meetingscribe.openai-api-key"), !apiKey.isEmpty else {
+        guard let apiKey = CredentialsStore.load(forKey: "com.notability.openai-api-key"), !apiKey.isEmpty else {
             throw APIError.missingAPIKey
         }
         let model = ModelSettings.shared.noteModel

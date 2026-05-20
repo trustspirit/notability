@@ -40,7 +40,7 @@ jobs:
         run: xcodegen generate
 
       - name: Resolve SPM packages
-        run: xcodebuild -resolvePackageDependencies -project MeetingScribe.xcodeproj -scheme MeetingScribe
+        run: xcodebuild -resolvePackageDependencies -project Notability.xcodeproj -scheme Notability
 
       - name: Build Release
         env:
@@ -48,8 +48,8 @@ jobs:
           BUILD: ${{ steps.info.outputs.build }}
         run: |
           xcodebuild \
-            -project MeetingScribe.xcodeproj \
-            -scheme MeetingScribe \
+            -project Notability.xcodeproj \
+            -scheme Notability \
             -configuration Release \
             -derivedDataPath build/DerivedData \
             CODE_SIGN_IDENTITY="-" \
