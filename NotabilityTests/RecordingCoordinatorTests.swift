@@ -332,9 +332,10 @@ final class RecordingCoordinatorTests: XCTestCase {
 // MARK: - Mocks
 
 final class MockAudioCaptureService: AudioCaptureServiceProtocol {
-    private let subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
-    var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> { subject.eraseToAnyPublisher() }
+    private let subject = PassthroughSubject<AudioChunk, Never>()
+    var chunkPublisher: AnyPublisher<AudioChunk, Never> { subject.eraseToAnyPublisher() }
     var audioLevelPublisher: AnyPublisher<Float, Never> { Empty().eraseToAnyPublisher() }
+    var isCapturingSystemAudio = true
     var startCalled = false
     var stopCalled = false
 
@@ -343,7 +344,7 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol {
         stopCalled = true
         subject.send(completion: .finished)
     }
-    func emit(_ chunk: (url: URL, timestamp: TimeInterval)) { subject.send(chunk) }
+    func emit(_ chunk: AudioChunk) { subject.send(chunk) }
 }
 
 final class MockTranscriptionService: TranscriptionServiceProtocol {

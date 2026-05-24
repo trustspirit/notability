@@ -64,7 +64,7 @@ final class RecordingCoordinator: ObservableObject {
 
         // Start capture first — only save meeting if it actually succeeds.
         try await audioCapture.startCapture()
-        systemAudioAvailable = (audioCapture as? AudioCaptureService)?.isCapturingSystemAudio ?? true
+        systemAudioAvailable = audioCapture.isCapturingSystemAudio
 
         let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
         let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
@@ -159,7 +159,7 @@ final class RecordingCoordinator: ObservableObject {
         }
     }
 
-    private func handleChunk(_ chunk: (url: URL, timestamp: TimeInterval)) async {
+    private func handleChunk(_ chunk: AudioChunk) async {
         pendingTranscriptionCount += 1
         let partialToken = UUID()
         defer {

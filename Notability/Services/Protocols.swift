@@ -2,6 +2,7 @@ import Foundation
 import Combine
 
 typealias TranscriptionPartialHandler = (String) async -> Void
+typealias AudioChunk = (url: URL, timestamp: TimeInterval)
 
 protocol MeetingStoreProtocol {
     var allMeetings: [Meeting] { get }
@@ -15,8 +16,12 @@ protocol MeetingStoreProtocol {
 }
 
 protocol AudioCaptureServiceProtocol {
-    var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> { get }
+    var chunkPublisher: AnyPublisher<AudioChunk, Never> { get }
     var audioLevelPublisher: AnyPublisher<Float, Never> { get }
+    // True after startCapture() succeeds with system audio attached. False
+    // when only the microphone is being captured (e.g. user denied screen
+    // recording permission). Read after startCapture() returns.
+    var isCapturingSystemAudio: Bool { get }
     func startCapture() async throws
     func stopCapture() async
 }

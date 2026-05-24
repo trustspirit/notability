@@ -6,8 +6,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
                                   SCStreamOutput, SCStreamDelegate,
                                   AVCaptureAudioDataOutputSampleBufferDelegate {
 
-    private var subject = PassthroughSubject<(url: URL, timestamp: TimeInterval), Never>()
-    var chunkPublisher: AnyPublisher<(url: URL, timestamp: TimeInterval), Never> {
+    private var subject = PassthroughSubject<AudioChunk, Never>()
+    var chunkPublisher: AnyPublisher<AudioChunk, Never> {
         subject.eraseToAnyPublisher()
     }
 
