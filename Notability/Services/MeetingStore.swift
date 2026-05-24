@@ -8,6 +8,11 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     private let storageDirectory: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    // Serializes all disk writes so background transcript-snapshot writes can
+    // never be reordered with foreground saves (which would let a stale snapshot
+    // overwrite a newer save). save() blocks on this queue; persistTranscriptSnapshot
+    // dispatches async.
+    private let diskWriteQueue = DispatchQueue(label: "com.notability.MeetingStore.disk", qos: .utility)
 
     init(storageDirectory: URL = MeetingStore.defaultDirectory) {
         self.storageDirectory = storageDirectory
@@ -41,17 +46,39 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     }
 
     func save(_ meeting: Meeting) {
-        let fileURL = storageDirectory.appendingPathComponent("\(meeting.id.uuidString).json")
-        do {
-            let data = try encoder.encode(meeting)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
-        }
         var updated = allMeetings.filter { $0.id != meeting.id }
         updated.append(meeting)
         updated.sort { $0.date > $1.date }
         allMeetings = updated
+
+        let fileURL = storageDirectory.appendingPathComponent("\(meeting.id.uuidString).json")
+        // sync: callers expect the meeting to be on disk when save() returns.
+        // Going through diskWriteQueue keeps write order consistent with any
+        // background snapshot writes already enqueued for the same file.
+        diskWriteQueue.sync {
+            do {
+                let data = try JSONEncoder().encode(meeting)
+                try data.write(to: fileURL, options: .atomic)
+            } catch {
+                print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
+            }
+        }
+    }
+
+    func persistTranscriptSnapshot(meetingId: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval) {
+        guard let idx = allMeetings.firstIndex(where: { $0.id == meetingId }) else { return }
+        // In-place mutation skips the filter+sort that save() does: transcript
+        // and duration changes don't affect the date-based ordering, so the
+        // existing index stays valid.
+        allMeetings[idx].transcript = transcript
+        allMeetings[idx].durationSeconds = durationSeconds
+        let snapshot = allMeetings[idx]
+        let fileURL = storageDirectory.appendingPathComponent("\(meetingId.uuidString).json")
+        diskWriteQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                try? data.write(to: fileURL, options: .atomic)
+            }
+        }
     }
 
     func fetch(id: UUID) -> Meeting? {

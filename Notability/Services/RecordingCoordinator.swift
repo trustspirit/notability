@@ -207,10 +207,9 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func persistCurrentTranscriptSnapshot() {
-        guard let id = currentMeetingId, var meeting = store.fetch(id: id) else { return }
-        meeting.durationSeconds = recordingStart.map { Date().timeIntervalSince($0) } ?? meeting.durationSeconds
-        meeting.transcript = liveTranscript
-        store.save(meeting)
+        guard let id = currentMeetingId else { return }
+        let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
+        store.persistTranscriptSnapshot(meetingId: id, transcript: liveTranscript, durationSeconds: duration)
     }
 
     private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
