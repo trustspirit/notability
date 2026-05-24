@@ -9,10 +9,9 @@ protocol MeetingStoreProtocol {
     func save(_ meeting: Meeting)
     func fetch(id: UUID) -> Meeting?
     func delete(id: UUID)
-    // Lightweight update for an in-progress recording's transcript: updates the
-    // in-memory snapshot synchronously, but persists to disk on a background
-    // queue so the realtime audio path is not blocked by file I/O.
-    func persistTranscriptSnapshot(meetingId: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval)
+    // Streaming transcript updates during recording — skips the full-save cost.
+    // Use save() instead when fields beyond transcript/duration may change.
+    func persistTranscriptSnapshot(id: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval)
 }
 
 protocol AudioCaptureServiceProtocol {

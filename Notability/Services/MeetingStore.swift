@@ -65,15 +65,14 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         }
     }
 
-    func persistTranscriptSnapshot(meetingId: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval) {
-        guard let idx = allMeetings.firstIndex(where: { $0.id == meetingId }) else { return }
+    func persistTranscriptSnapshot(id: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval) {
+        guard let idx = allMeetings.firstIndex(where: { $0.id == id }) else { return }
         // In-place mutation skips the filter+sort that save() does: transcript
-        // and duration changes don't affect the date-based ordering, so the
-        // existing index stays valid.
+        // and duration changes don't affect the date-based ordering.
         allMeetings[idx].transcript = transcript
         allMeetings[idx].durationSeconds = durationSeconds
         let snapshot = allMeetings[idx]
-        let fileURL = storageDirectory.appendingPathComponent("\(meetingId.uuidString).json")
+        let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
         diskWriteQueue.async {
             if let data = try? JSONEncoder().encode(snapshot) {
                 try? data.write(to: fileURL, options: .atomic)
