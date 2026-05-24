@@ -12,7 +12,18 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var systemAudioAvailable: Bool = true
     @Published private(set) var pendingTranscriptionCount = 0
     private var livePartialTranscriptToken: UUID?
-    private var liveTranscriptSourceTimestamps: [TimeInterval] = []
+    // Source of truth for live transcript state. `liveTranscript` is published
+    // to the UI as a derived value via didSet, so the chunk text and its
+    // merge-window timestamp can never drift apart (would happen if they
+    // lived in two separate arrays).
+    private var liveTranscriptRows: [LiveTranscriptRow] = [] {
+        didSet { liveTranscript = liveTranscriptRows.map(\.chunk) }
+    }
+
+    private struct LiveTranscriptRow {
+        var chunk: TranscriptChunk
+        var lastSourceTimestamp: TimeInterval
+    }
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -53,8 +64,7 @@ final class RecordingCoordinator: ObservableObject {
 
     func startRecording() async throws {
         let id = UUID()
-        liveTranscript = []
-        liveTranscriptSourceTimestamps = []
+        liveTranscriptRows = []
         livePartialTranscript = nil
         visibleLiveTranscript = []
         livePartialTranscriptToken = nil
@@ -200,8 +210,9 @@ final class RecordingCoordinator: ObservableObject {
             from: liveTranscriptMergeEntries
                 + [(row: chunk, lastSourceTimestamp: chunk.timestamp)]
         )
-        liveTranscript = merged.map { $0.row }
-        liveTranscriptSourceTimestamps = merged.map { $0.lastSourceTimestamp }
+        liveTranscriptRows = merged.map {
+            LiveTranscriptRow(chunk: $0.row, lastSourceTimestamp: $0.lastSourceTimestamp)
+        }
         updateVisibleLiveTranscript()
         persistCurrentTranscriptSnapshot()
     }
@@ -255,16 +266,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private var liveTranscriptMergeEntries: [TranscriptMergeEntry] {
-        guard liveTranscript.count == liveTranscriptSourceTimestamps.count else {
-            // Invariant: addTranscriptChunk writes both arrays together. If they
-            // diverge, downstream merges would silently degrade by losing the
-            // accurate source-timestamp gap (and thus stop merging continuations).
-            assertionFailure("liveTranscript and liveTranscriptSourceTimestamps out of sync")
-            return liveTranscript.map { (row: $0, lastSourceTimestamp: $0.timestamp) }
-        }
-        return zip(liveTranscript, liveTranscriptSourceTimestamps).map {
-            (row: $0.0, lastSourceTimestamp: $0.1)
-        }
+        liveTranscriptRows.map { (row: $0.chunk, lastSourceTimestamp: $0.lastSourceTimestamp) }
     }
 
     private static func mergedTranscriptEntries(from entries: [TranscriptMergeEntry]) -> [TranscriptMergeEntry] {

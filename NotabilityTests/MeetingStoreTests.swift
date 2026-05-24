@@ -61,7 +61,7 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(reloaded?.transcript, meeting.transcript)
         XCTAssertEqual(
             reloaded?.notesGenerationError,
-            "Recording or note generation was interrupted. Completed transcript segments were saved."
+            "Recording or note generation was interrupted. Any completed transcript segments were saved."
         )
     }
 

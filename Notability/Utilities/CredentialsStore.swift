@@ -16,10 +16,20 @@ import Security
 // subsequent loads never have to consult Keychain (or trigger ACL prompts) again.
 enum CredentialsStore {
     private static let legacyKeychainService = "com.meetingscribe.app"
+
+    #if DEBUG
+    // Test-only injection point so tests can route writes/reads to a temp
+    // directory instead of the user's real Application Support. Not compiled
+    // into release builds, preventing accidental misuse from production code.
     static var directoryOverride: URL?
+    #endif
 
     private static var directoryURL: URL {
-        directoryOverride ?? defaultDirectoryURL
+        #if DEBUG
+        return directoryOverride ?? defaultDirectoryURL
+        #else
+        return defaultDirectoryURL
+        #endif
     }
 
     private static let defaultDirectoryURL: URL = {

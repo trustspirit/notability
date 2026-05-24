@@ -46,6 +46,10 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     }
 
     func save(_ meeting: Meeting) {
+        // In-memory update first so observers see the change immediately. If the
+        // disk write fails (rare — only on disk-full or permission errors), the
+        // next save will overwrite the stale file; meanwhile the UI stays
+        // responsive instead of waiting on I/O before reflecting user actions.
         var updated = allMeetings.filter { $0.id != meeting.id }
         updated.append(meeting)
         updated.sort { $0.date > $1.date }
@@ -73,6 +77,10 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         allMeetings[idx].durationSeconds = durationSeconds
         let snapshot = allMeetings[idx]
         let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
+        // Errors are intentionally silenced: this runs on every chunk during a
+        // recording, so a transient write failure would spam logs. The next
+        // chunk's snapshot supersedes this one anyway, so a missed write is
+        // self-healing within seconds.
         diskWriteQueue.async {
             if let data = try? JSONEncoder().encode(snapshot) {
                 try? data.write(to: fileURL, options: .atomic)
@@ -117,7 +125,7 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         // Meetings with no notes and no error were interrupted mid-processing (app crash/force-quit).
         // Mark them failed so the UI shows an error state instead of an infinite spinner.
         for i in meetings.indices where meetings[i].notes == nil && meetings[i].notesGenerationError == nil {
-            meetings[i].notesGenerationError = "Recording or note generation was interrupted. Completed transcript segments were saved."
+            meetings[i].notesGenerationError = "Recording or note generation was interrupted. Any completed transcript segments were saved."
             let fileURL = storageDirectory.appendingPathComponent("\(meetings[i].id.uuidString).json")
             if let data = try? encoder.encode(meetings[i]) {
                 try? data.write(to: fileURL, options: .atomic)
