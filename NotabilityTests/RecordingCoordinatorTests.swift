@@ -87,6 +87,31 @@ final class RecordingCoordinatorTests: XCTestCase {
         await sut.stopRecording()
     }
 
+    func test_saved_transcript_chunk_purges_raw_buffer_but_remains_visible() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = MeetingStore(storageDirectory: tempDir)
+        let capture = MockAudioCaptureService()
+        let transcription = MockTranscriptionService()
+        let noteGen = MockNoteGenerationService()
+        let sut = RecordingCoordinator(audioCapture: capture, transcription: transcription, noteGeneration: noteGen, store: store)
+
+        try await sut.startRecording()
+        await Task.yield()
+        let meetingId = try XCTUnwrap(sut.currentMeetingId)
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(rawTranscriptBufferCount(in: sut), 0)
+        XCTAssertEqual(sut.visibleLiveTranscript.first?.text, "Mock transcription")
+        XCTAssertEqual(MeetingStore(storageDirectory: tempDir).fetch(id: meetingId)?.transcript.first?.text, "Mock transcription")
+
+        await sut.stopRecording()
+    }
+
     func test_transcript_chunks_merge_until_sentence_terminates() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.texts = [
@@ -305,6 +330,14 @@ final class RecordingCoordinatorTests: XCTestCase {
         let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try Data().write(to: tempWAV)
         capture.emit((url: tempWAV, timestamp: timestamp))
+    }
+
+    private func rawTranscriptBufferCount(in coordinator: RecordingCoordinator) -> Int {
+        Mirror(reflecting: coordinator)
+            .children
+            .first { $0.label == "rawTranscriptChunks" }
+            .flatMap { $0.value as? [TranscriptChunk] }?
+            .count ?? -1
     }
 }
 

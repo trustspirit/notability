@@ -13,6 +13,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var pendingTranscriptionCount = 0
     private var livePartialTranscriptToken: UUID?
     private var rawTranscriptChunks: [TranscriptChunk] = []
+    private var liveTranscriptSourceTimestamps: [TimeInterval] = []
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
@@ -33,6 +34,7 @@ final class RecordingCoordinator: ObservableObject {
     }()
     private static let transcriptionFailurePrefix = "[transcription failed"
     private static let maxMergeTimestampGap: TimeInterval = 8.0
+    private typealias TranscriptMergeEntry = (row: TranscriptChunk, lastSourceTimestamp: TimeInterval)
 
     init(
         audioCapture: AudioCaptureServiceProtocol,
@@ -54,6 +56,7 @@ final class RecordingCoordinator: ObservableObject {
         let id = UUID()
         rawTranscriptChunks = []
         liveTranscript = []
+        liveTranscriptSourceTimestamps = []
         livePartialTranscript = nil
         visibleLiveTranscript = []
         livePartialTranscriptToken = nil
@@ -127,7 +130,6 @@ final class RecordingCoordinator: ObservableObject {
         }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
 
-        liveTranscript = Self.mergedTranscriptRows(from: rawTranscriptChunks)
         visibleLiveTranscript = liveTranscript
         var meeting = store.fetch(id: id) ?? Meeting(id: id, title: "Meeting", date: Date(), durationSeconds: duration, transcript: liveTranscript, notes: nil, notesGenerationError: nil)
         meeting.durationSeconds = duration
@@ -197,9 +199,16 @@ final class RecordingCoordinator: ObservableObject {
 
     private func addTranscriptChunk(_ chunk: TranscriptChunk) {
         rawTranscriptChunks.append(chunk)
-        liveTranscript = Self.mergedTranscriptRows(from: rawTranscriptChunks)
+        let merged = Self.mergedTranscriptEntries(
+            from: liveTranscriptMergeEntries + rawTranscriptChunks.map {
+                (row: $0, lastSourceTimestamp: $0.timestamp)
+            }
+        )
+        liveTranscript = merged.map { $0.row }
+        liveTranscriptSourceTimestamps = merged.map { $0.lastSourceTimestamp }
         updateVisibleLiveTranscript()
         persistCurrentTranscriptSnapshot()
+        rawTranscriptChunks.removeAll(keepingCapacity: true)
     }
 
     private func persistCurrentTranscriptSnapshot() {
@@ -241,9 +250,10 @@ final class RecordingCoordinator: ObservableObject {
             visibleLiveTranscript = liveTranscript
             return
         }
-        var rows = rawTranscriptChunks
-        rows.append(partial)
-        visibleLiveTranscript = Self.mergedTranscriptRows(from: rows)
+        let merged = Self.mergedTranscriptEntries(
+            from: liveTranscriptMergeEntries + [(row: partial, lastSourceTimestamp: partial.timestamp)]
+        )
+        visibleLiveTranscript = merged.map { $0.row }
     }
 
     private static func isTranscriptionFailure(_ text: String) -> Bool {
@@ -251,44 +261,59 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private static func mergedTranscriptRows(from chunks: [TranscriptChunk]) -> [TranscriptChunk] {
-        let sorted = chunks.sorted { $0.timestamp < $1.timestamp }
-        var merged: [TranscriptChunk] = []
-        var lastMergedSourceTimestamp: TimeInterval?
+        mergedTranscriptEntries(
+            from: chunks.map { (row: $0, lastSourceTimestamp: $0.timestamp) }
+        ).map { $0.row }
+    }
 
-        for chunk in sorted {
-            let text = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var liveTranscriptMergeEntries: [TranscriptMergeEntry] {
+        guard liveTranscript.count == liveTranscriptSourceTimestamps.count else {
+            return liveTranscript.map { (row: $0, lastSourceTimestamp: $0.timestamp) }
+        }
+        return zip(liveTranscript, liveTranscriptSourceTimestamps).map {
+            (row: $0.0, lastSourceTimestamp: $0.1)
+        }
+    }
+
+    private static func mergedTranscriptEntries(from entries: [TranscriptMergeEntry]) -> [TranscriptMergeEntry] {
+        let sorted = entries.sorted { $0.row.timestamp < $1.row.timestamp }
+        var merged: [TranscriptMergeEntry] = []
+
+        for entry in sorted {
+            let text = entry.row.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            let row = TranscriptChunk(timestamp: chunk.timestamp, text: text)
+            let row = TranscriptChunk(timestamp: entry.row.timestamp, text: text)
 
             if let last = merged.last,
-               let lastSourceTimestamp = lastMergedSourceTimestamp,
-               !isTranscriptionFailure(last.text),
+               !isTranscriptionFailure(last.row.text),
                !isTranscriptionFailure(text),
-               chunk.timestamp - lastSourceTimestamp <= maxMergeTimestampGap,
-               let deduplicated = deduplicatedAdjacentTranscriptText(last.text, text) {
-                merged[merged.count - 1] = TranscriptChunk(timestamp: last.timestamp, text: deduplicated)
-                lastMergedSourceTimestamp = chunk.timestamp
+               row.timestamp - last.lastSourceTimestamp <= maxMergeTimestampGap,
+               let deduplicated = deduplicatedAdjacentTranscriptText(last.row.text, text) {
+                merged[merged.count - 1] = (
+                    row: TranscriptChunk(timestamp: last.row.timestamp, text: deduplicated),
+                    lastSourceTimestamp: entry.lastSourceTimestamp
+                )
                 continue
             }
 
             guard
                 let last = merged.last,
-                let lastSourceTimestamp = lastMergedSourceTimestamp,
-                !isTranscriptionFailure(last.text),
+                !isTranscriptionFailure(last.row.text),
                 !isTranscriptionFailure(text),
-                chunk.timestamp - lastSourceTimestamp <= maxMergeTimestampGap,
-                shouldMergeWithPreviousSentence(last.text)
+                row.timestamp - last.lastSourceTimestamp <= maxMergeTimestampGap,
+                shouldMergeWithPreviousSentence(last.row.text)
             else {
-                merged.append(row)
-                lastMergedSourceTimestamp = chunk.timestamp
+                merged.append((row: row, lastSourceTimestamp: entry.lastSourceTimestamp))
                 continue
             }
 
-            merged[merged.count - 1] = TranscriptChunk(
-                timestamp: last.timestamp,
-                text: joinedTranscriptText(last.text, text)
+            merged[merged.count - 1] = (
+                row: TranscriptChunk(
+                    timestamp: last.row.timestamp,
+                    text: joinedTranscriptText(last.row.text, text)
+                ),
+                lastSourceTimestamp: entry.lastSourceTimestamp
             )
-            lastMergedSourceTimestamp = chunk.timestamp
         }
 
         return merged
