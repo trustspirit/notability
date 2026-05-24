@@ -27,7 +27,11 @@ struct TranscriptTabView: View {
                         .help("Copy the entire transcript to the clipboard")
                     }
                     LazyVStack(alignment: .leading, spacing: Spacing.sm) {
-                        ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                        // Timestamps are produced monotonically by the chunker and
+                        // serve as a stable per-row key. Offsets would invalidate
+                        // SwiftUI's view reuse if chunks were ever inserted out of
+                        // order.
+                        ForEach(chunks, id: \.timestamp) { chunk in
                             TranscriptRow(timestamp: chunk.timestamp, text: chunk.text)
                         }
                     }

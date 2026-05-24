@@ -35,10 +35,9 @@ struct MeetingDetailView: View {
                         .font(.title.weight(.bold))
                         .textFieldStyle(.plain)
                         .focused($titleFocused)
-                        .onSubmit {
-                            commitTitle()
-                            titleFocused = false
-                        }
+                        // Single commit path: defer to the focus-change handler so
+                        // Enter and blur both flow through one call site.
+                        .onSubmit { titleFocused = false }
                         .onChange(of: titleFocused) { _, isFocused in
                             if !isFocused { commitTitle() }
                         }

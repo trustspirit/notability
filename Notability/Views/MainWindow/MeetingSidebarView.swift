@@ -7,6 +7,7 @@ struct MeetingSidebarView: View {
     @Binding var selectedMeetingId: UUID?
     @State private var search = ""
     @State private var pendingDeletion: Meeting?
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,6 +60,7 @@ struct MeetingSidebarView: View {
             TextField("Search meetings…", text: $search)
                 .textFieldStyle(.plain)
                 .font(.body)
+                .focused($searchFocused)
             if !search.isEmpty {
                 Button {
                     search = ""
@@ -93,10 +95,13 @@ struct MeetingSidebarView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .onDeleteCommand {
-            if let id = selectedMeetingId,
-               let meeting = filteredMeetings.first(where: { $0.id == id }) {
-                confirmDelete(meeting)
-            }
+            // `onDeleteCommand` listens on the window responder chain, so it can
+            // fire while the search field is focused (e.g. emptying the query
+            // with backspace). Skip in that case.
+            guard !searchFocused,
+                  let id = selectedMeetingId,
+                  let meeting = filteredMeetings.first(where: { $0.id == id }) else { return }
+            confirmDelete(meeting)
         }
         .alert(
             "Delete meeting?",
