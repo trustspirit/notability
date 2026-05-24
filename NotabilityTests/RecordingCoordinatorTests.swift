@@ -63,6 +63,30 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertFalse(sut.liveTranscript.isEmpty)
     }
 
+    func test_completed_transcript_is_persisted_before_stop_recording() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = MeetingStore(storageDirectory: tempDir)
+        let capture = MockAudioCaptureService()
+        let transcription = MockTranscriptionService()
+        let noteGen = MockNoteGenerationService()
+        let sut = RecordingCoordinator(audioCapture: capture, transcription: transcription, noteGeneration: noteGen, store: store)
+
+        try await sut.startRecording()
+        await Task.yield()
+        let meetingId = try XCTUnwrap(sut.currentMeetingId)
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let reloadedStore = MeetingStore(storageDirectory: tempDir)
+        XCTAssertEqual(reloadedStore.fetch(id: meetingId)?.transcript.first?.text, "Mock transcription")
+
+        await sut.stopRecording()
+    }
+
     func test_transcript_chunks_merge_until_sentence_terminates() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.texts = [
@@ -112,6 +136,42 @@ final class RecordingCoordinatorTests: XCTestCase {
             sut.liveTranscript.first?.text,
             "제가 만 원에 샀어요 만오천원이 됐어요 그럼 이제 추적 손절매 가격이 한 만삼천오백원 됐을 거 아니에요."
         )
+    }
+
+    func test_exact_duplicate_transcript_chunk_is_dropped_within_merge_window() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "다음 안건입니다.",
+            "다음 안건입니다."
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 1)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 1)
+        XCTAssertEqual(sut.liveTranscript.first?.text, "다음 안건입니다.")
+    }
+
+    func test_overlapping_transcript_chunk_prefix_is_not_repeated() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "오늘 회의는 예산 검토",
+            "예산 검토부터 시작하겠습니다."
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 6)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(sut.liveTranscript.count, 1)
+        XCTAssertEqual(sut.liveTranscript.first?.text, "오늘 회의는 예산 검토부터 시작하겠습니다.")
     }
 
     func test_unpunctuated_chunks_do_not_merge_after_long_timestamp_gap() async throws {

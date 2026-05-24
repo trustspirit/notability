@@ -3,13 +3,17 @@ import XCTest
 
 final class NoteGenerationServiceTests: XCTestCase {
     private let keychainKey = "com.notability.openai-api-key"
+    private var sandbox: CredentialStoreSandbox!
 
     override func setUp() async throws {
+        sandbox = CredentialStoreSandbox()
         CredentialsStore.save("sk-test", forKey: keychainKey)
     }
 
     override func tearDown() async throws {
         CredentialsStore.delete(forKey: keychainKey)
+        sandbox.tearDown()
+        sandbox = nil
     }
 
     func test_generates_notes_from_transcript() async throws {

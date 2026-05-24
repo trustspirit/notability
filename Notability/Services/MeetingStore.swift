@@ -91,7 +91,7 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         // Meetings with no notes and no error were interrupted mid-processing (app crash/force-quit).
         // Mark them failed so the UI shows an error state instead of an infinite spinner.
         for i in meetings.indices where meetings[i].notes == nil && meetings[i].notesGenerationError == nil {
-            meetings[i].notesGenerationError = "Processing was interrupted. Delete and re-record to try again."
+            meetings[i].notesGenerationError = "Recording or note generation was interrupted. Completed transcript segments were saved."
             let fileURL = storageDirectory.appendingPathComponent("\(meetings[i].id.uuidString).json")
             if let data = try? encoder.encode(meetings[i]) {
                 try? data.write(to: fileURL, options: .atomic)

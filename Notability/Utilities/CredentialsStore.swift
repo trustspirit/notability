@@ -16,8 +16,13 @@ import Security
 // subsequent loads never have to consult Keychain (or trigger ACL prompts) again.
 enum CredentialsStore {
     private static let legacyKeychainService = "com.meetingscribe.app"
+    static var directoryOverride: URL?
 
-    private static let directoryURL: URL = {
+    private static var directoryURL: URL {
+        directoryOverride ?? defaultDirectoryURL
+    }
+
+    private static let defaultDirectoryURL: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return appSupport.appendingPathComponent("Notability/credentials", isDirectory: true)
     }()

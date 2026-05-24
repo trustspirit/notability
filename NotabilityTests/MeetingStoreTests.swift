@@ -50,6 +50,21 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(sut2.fetch(id: meeting.id)?.title, "Persisted")
     }
 
+    func test_interrupted_meeting_preserves_saved_transcript_on_reload() {
+        var meeting = makeMeeting(title: "Interrupted")
+        meeting.transcript = [TranscriptChunk(timestamp: 12, text: "Already saved transcript")]
+        sut.save(meeting)
+
+        let sut2 = MeetingStore(storageDirectory: tempDir)
+        let reloaded = sut2.fetch(id: meeting.id)
+
+        XCTAssertEqual(reloaded?.transcript, meeting.transcript)
+        XCTAssertEqual(
+            reloaded?.notesGenerationError,
+            "Recording or note generation was interrupted. Completed transcript segments were saved."
+        )
+    }
+
     func test_meetings_publisher_emits_on_save() {
         let expectation = expectation(description: "publisher emits")
         var received: [Meeting] = []

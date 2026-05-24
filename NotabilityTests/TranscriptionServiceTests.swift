@@ -3,8 +3,10 @@ import XCTest
 
 final class TranscriptionServiceTests: XCTestCase {
     private let keychainKey = "com.notability.openai-api-key"
+    private var sandbox: CredentialStoreSandbox!
 
     override func setUp() async throws {
+        sandbox = CredentialStoreSandbox()
         CredentialsStore.save("sk-test", forKey: keychainKey)
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
@@ -13,6 +15,8 @@ final class TranscriptionServiceTests: XCTestCase {
 
     override func tearDown() async throws {
         CredentialsStore.delete(forKey: keychainKey)
+        sandbox.tearDown()
+        sandbox = nil
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
         ModelSettings.shared.transcriptionLanguage = "ko"

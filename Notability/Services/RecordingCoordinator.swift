@@ -199,6 +199,14 @@ final class RecordingCoordinator: ObservableObject {
         rawTranscriptChunks.append(chunk)
         liveTranscript = Self.mergedTranscriptRows(from: rawTranscriptChunks)
         updateVisibleLiveTranscript()
+        persistCurrentTranscriptSnapshot()
+    }
+
+    private func persistCurrentTranscriptSnapshot() {
+        guard let id = currentMeetingId, var meeting = store.fetch(id: id) else { return }
+        meeting.durationSeconds = recordingStart.map { Date().timeIntervalSince($0) } ?? meeting.durationSeconds
+        meeting.transcript = liveTranscript
+        store.save(meeting)
     }
 
     private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
@@ -252,6 +260,17 @@ final class RecordingCoordinator: ObservableObject {
             guard !text.isEmpty else { continue }
             let row = TranscriptChunk(timestamp: chunk.timestamp, text: text)
 
+            if let last = merged.last,
+               let lastSourceTimestamp = lastMergedSourceTimestamp,
+               !isTranscriptionFailure(last.text),
+               !isTranscriptionFailure(text),
+               chunk.timestamp - lastSourceTimestamp <= maxMergeTimestampGap,
+               let deduplicated = deduplicatedAdjacentTranscriptText(last.text, text) {
+                merged[merged.count - 1] = TranscriptChunk(timestamp: last.timestamp, text: deduplicated)
+                lastMergedSourceTimestamp = chunk.timestamp
+                continue
+            }
+
             guard
                 let last = merged.last,
                 let lastSourceTimestamp = lastMergedSourceTimestamp,
@@ -294,6 +313,90 @@ final class RecordingCoordinator: ObservableObject {
         guard !trimmedLeft.isEmpty else { return trimmedRight }
         guard !trimmedRight.isEmpty else { return trimmedLeft }
         return "\(trimmedLeft) \(trimmedRight)"
+    }
+
+    private static func deduplicatedAdjacentTranscriptText(_ left: String, _ right: String) -> String? {
+        let trimmedLeft = left.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRight = right.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLeft = normalizedForTranscriptComparison(trimmedLeft)
+        let normalizedRight = normalizedForTranscriptComparison(trimmedRight)
+        let minimumOverlapLength = 4
+
+        guard normalizedLeft.count >= minimumOverlapLength,
+              normalizedRight.count >= minimumOverlapLength else {
+            return nil
+        }
+
+        if normalizedLeft == normalizedRight || normalizedLeft.hasPrefix(normalizedRight) {
+            return trimmedLeft
+        }
+        if normalizedRight.hasPrefix(normalizedLeft) {
+            return trimmedRight
+        }
+        guard let overlapLength = longestSuffixPrefixOverlap(
+            left: normalizedLeft,
+            right: normalizedRight,
+            minimumLength: minimumOverlapLength
+        ) else {
+            return nil
+        }
+
+        let remainder = rightRemainderAfterNormalizedPrefix(trimmedRight, prefixLength: overlapLength)
+        guard !remainder.text.isEmpty else { return trimmedLeft }
+        let separator = remainder.continuesToken || remainder.text.first?.isPunctuation == true ? "" : " "
+        return "\(trimmedLeft)\(separator)\(remainder.text)"
+    }
+
+    private static func normalizedForTranscriptComparison(_ text: String) -> String {
+        text
+            .lowercased()
+            .filter { !$0.isWhitespace && !$0.isPunctuation }
+    }
+
+    private static func longestSuffixPrefixOverlap(
+        left: String,
+        right: String,
+        minimumLength: Int
+    ) -> Int? {
+        let maxLength = min(left.count, right.count)
+        guard maxLength >= minimumLength else { return nil }
+
+        for length in stride(from: maxLength, through: minimumLength, by: -1) {
+            if left.suffix(length) == right.prefix(length) {
+                return length
+            }
+        }
+        return nil
+    }
+
+    private static func rightRemainderAfterNormalizedPrefix(
+        _ text: String,
+        prefixLength: Int
+    ) -> (text: String, continuesToken: Bool) {
+        var remaining = prefixLength
+        var index = text.startIndex
+
+        while index < text.endIndex, remaining > 0 {
+            let character = text[index]
+            if !character.isWhitespace && !character.isPunctuation {
+                remaining -= 1
+            }
+            index = text.index(after: index)
+        }
+
+        let continuesToken: Bool
+        if index > text.startIndex, index < text.endIndex {
+            let previous = text[text.index(before: index)]
+            let current = text[index]
+            continuesToken = !previous.isWhitespace && !previous.isPunctuation && !current.isWhitespace && !current.isPunctuation
+        } else {
+            continuesToken = false
+        }
+
+        return (
+            text: text[index...].trimmingCharacters(in: .whitespacesAndNewlines),
+            continuesToken: continuesToken
+        )
     }
 
     private static func isMeaningfulTranscript(_ text: String) -> Bool {

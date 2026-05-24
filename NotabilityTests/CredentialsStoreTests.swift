@@ -1,11 +1,35 @@
 import XCTest
 @testable import Notability
 
+final class CredentialStoreSandbox {
+    let directory: URL
+
+    init() {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NotabilityTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        CredentialsStore.directoryOverride = directory
+    }
+
+    func tearDown() {
+        try? FileManager.default.removeItem(at: directory)
+        CredentialsStore.directoryOverride = nil
+    }
+}
+
 final class CredentialsStoreTests: XCTestCase {
     let testKey = "com.notability.test.apikey.\(UUID().uuidString)"
+    private var sandbox: CredentialStoreSandbox!
+
+    override func setUp() {
+        super.setUp()
+        sandbox = CredentialStoreSandbox()
+    }
 
     override func tearDown() {
         CredentialsStore.delete(forKey: testKey)
+        sandbox.tearDown()
+        sandbox = nil
         super.tearDown()
     }
 
