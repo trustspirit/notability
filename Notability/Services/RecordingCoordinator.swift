@@ -12,7 +12,6 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var systemAudioAvailable: Bool = true
     @Published private(set) var pendingTranscriptionCount = 0
     private var livePartialTranscriptToken: UUID?
-    private var rawTranscriptChunks: [TranscriptChunk] = []
     private var liveTranscriptSourceTimestamps: [TimeInterval] = []
 
     private let audioCapture: AudioCaptureServiceProtocol
@@ -54,7 +53,6 @@ final class RecordingCoordinator: ObservableObject {
 
     func startRecording() async throws {
         let id = UUID()
-        rawTranscriptChunks = []
         liveTranscript = []
         liveTranscriptSourceTimestamps = []
         livePartialTranscript = nil
@@ -198,17 +196,14 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func addTranscriptChunk(_ chunk: TranscriptChunk) {
-        rawTranscriptChunks.append(chunk)
         let merged = Self.mergedTranscriptEntries(
-            from: liveTranscriptMergeEntries + rawTranscriptChunks.map {
-                (row: $0, lastSourceTimestamp: $0.timestamp)
-            }
+            from: liveTranscriptMergeEntries
+                + [(row: chunk, lastSourceTimestamp: chunk.timestamp)]
         )
         liveTranscript = merged.map { $0.row }
         liveTranscriptSourceTimestamps = merged.map { $0.lastSourceTimestamp }
         updateVisibleLiveTranscript()
         persistCurrentTranscriptSnapshot()
-        rawTranscriptChunks.removeAll(keepingCapacity: true)
     }
 
     private func persistCurrentTranscriptSnapshot() {
@@ -260,14 +255,12 @@ final class RecordingCoordinator: ObservableObject {
         text.hasPrefix(transcriptionFailurePrefix)
     }
 
-    private static func mergedTranscriptRows(from chunks: [TranscriptChunk]) -> [TranscriptChunk] {
-        mergedTranscriptEntries(
-            from: chunks.map { (row: $0, lastSourceTimestamp: $0.timestamp) }
-        ).map { $0.row }
-    }
-
     private var liveTranscriptMergeEntries: [TranscriptMergeEntry] {
         guard liveTranscript.count == liveTranscriptSourceTimestamps.count else {
+            // Invariant: addTranscriptChunk writes both arrays together. If they
+            // diverge, downstream merges would silently degrade by losing the
+            // accurate source-timestamp gap (and thus stop merging continuations).
+            assertionFailure("liveTranscript and liveTranscriptSourceTimestamps out of sync")
             return liveTranscript.map { (row: $0, lastSourceTimestamp: $0.timestamp) }
         }
         return zip(liveTranscript, liveTranscriptSourceTimestamps).map {
