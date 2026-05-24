@@ -18,6 +18,7 @@ struct SettingsView: View {
                 noteInstructionsSection
             }
             .padding(Spacing.xl)
+            .overlayScrollerStyle()
         }
         .frame(width: 520, height: 640)
         .background(BrandColor.surfaceElevated)

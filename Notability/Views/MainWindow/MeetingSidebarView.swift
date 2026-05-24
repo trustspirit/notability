@@ -6,6 +6,7 @@ struct MeetingSidebarView: View {
     @EnvironmentObject var coordinator: RecordingCoordinator
     @Binding var selectedMeetingId: UUID?
     @State private var search = ""
+    @State private var pendingDeletion: Meeting?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,11 +80,11 @@ struct MeetingSidebarView: View {
 
     private var meetingList: some View {
         List(filteredMeetings, selection: $selectedMeetingId) { meeting in
-            MeetingRow(meeting: meeting)
+            MeetingRow(meeting: meeting, onDelete: { confirmDelete(meeting) })
                 .tag(meeting.id)
                 .contextMenu {
                     Button(role: .destructive) {
-                        delete(meeting)
+                        confirmDelete(meeting)
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
@@ -91,6 +92,25 @@ struct MeetingSidebarView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .onDeleteCommand {
+            if let id = selectedMeetingId,
+               let meeting = filteredMeetings.first(where: { $0.id == id }) {
+                confirmDelete(meeting)
+            }
+        }
+        .alert(
+            "Delete meeting?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            presenting: pendingDeletion
+        ) { meeting in
+            Button("Delete", role: .destructive) { delete(meeting) }
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+        } message: { meeting in
+            Text("\"\(meeting.title)\" will be permanently deleted. This can't be undone.")
+        }
     }
 
     private var filteredMeetings: [Meeting] {
@@ -133,11 +153,16 @@ struct MeetingSidebarView: View {
         .padding(Spacing.lg)
     }
 
+    private func confirmDelete(_ meeting: Meeting) {
+        pendingDeletion = meeting
+    }
+
     private func delete(_ meeting: Meeting) {
         store.delete(id: meeting.id)
         if selectedMeetingId == meeting.id {
             selectedMeetingId = nil
         }
+        pendingDeletion = nil
     }
 
     private func showCaptureError(_ error: Error) {
@@ -149,6 +174,8 @@ struct MeetingSidebarView: View {
 
 private struct MeetingRow: View {
     let meeting: Meeting
+    var onDelete: (() -> Void)? = nil
+    @State private var hover = false
 
     // Static formatter — instantiating RelativeDateTimeFormatter is non-trivial
     // and the sidebar re-renders frequently.
@@ -174,17 +201,36 @@ private struct MeetingRow: View {
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            if meeting.notes == nil && meeting.notesGenerationError == nil {
-                Image(systemName: "hourglass")
-                    .imageScale(.small)
-                    .foregroundStyle(BrandColor.warning)
-            } else if meeting.notesGenerationError != nil {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .imageScale(.small)
-                    .foregroundStyle(BrandColor.warning)
+            statusBadge
+            if hover, let onDelete {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tertiary)
+                .help("Delete meeting (⌫)")
+                .transition(.opacity)
             }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { hover = hovering }
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if meeting.notes == nil && meeting.notesGenerationError == nil {
+            Image(systemName: "hourglass")
+                .imageScale(.small)
+                .foregroundStyle(BrandColor.warning)
+        } else if meeting.notesGenerationError != nil {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .imageScale(.small)
+                .foregroundStyle(BrandColor.warning)
+        }
     }
 
     private var statusIndicator: some View {

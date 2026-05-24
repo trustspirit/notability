@@ -6,6 +6,8 @@ struct MeetingDetailView: View {
     @EnvironmentObject var store: MeetingStore
     @State private var selectedTab: DetailTab = .summary
     @State private var titleInput = ""
+    @State private var titleHover = false
+    @FocusState private var titleFocused: Bool
 
     enum DetailTab: Hashable {
         case summary, actions, decisions, transcript
@@ -28,10 +30,48 @@ struct MeetingDetailView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: Spacing.md) {
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                TextField("Meeting title", text: $titleInput)
-                    .font(.title.weight(.bold))
-                    .textFieldStyle(.plain)
-                    .onSubmit { commitTitle() }
+                HStack(spacing: Spacing.xs) {
+                    TextField("Meeting title", text: $titleInput)
+                        .font(.title.weight(.bold))
+                        .textFieldStyle(.plain)
+                        .focused($titleFocused)
+                        .onSubmit {
+                            commitTitle()
+                            titleFocused = false
+                        }
+                        .onChange(of: titleFocused) { _, isFocused in
+                            if !isFocused { commitTitle() }
+                        }
+                    if titleFocused {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(BrandColor.accent)
+                            .transition(.opacity)
+                    } else if titleHover {
+                        Image(systemName: "pencil")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(.horizontal, Spacing.xs)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                        .fill(titleFocused
+                              ? BrandColor.accent.opacity(0.08)
+                              : (titleHover ? Color.primary.opacity(0.05) : .clear))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                        .strokeBorder(titleFocused ? BrandColor.accent.opacity(0.4) : .clear, lineWidth: 0.5)
+                )
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.12)) { titleHover = hovering }
+                }
+                .onTapGesture { titleFocused = true }
+                .help("Click to rename meeting")
                 HStack(spacing: Spacing.sm) {
                     Label(meeting.date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                     Label(formatDuration(meeting.durationSeconds), systemImage: "clock")
