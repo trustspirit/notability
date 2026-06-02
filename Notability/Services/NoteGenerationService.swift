@@ -108,7 +108,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
     private static let systemPrompt = """
         You are a meeting notes assistant. Given a meeting transcript, extract and return a JSON object with exactly these keys:
-        - "summary": A 2-3 sentence paragraph summarizing the meeting.
+        - "summary": A comprehensive summary of the meeting written as well-structured prose (multiple paragraphs when the discussion warrants it). Cover the main topics discussed, the context and reasoning behind them, important points raised by participants, and the outcomes or open questions. Be thorough and specific rather than generic — capture what actually makes this meeting distinct. Do not artificially limit the length; match the depth of the discussion.
         - "action_items": Array of objects with keys "description" (string), "assignee" (string or null), "due_date" (string or null).
         - "key_decisions": Array of strings, each a key decision made.
         Respond in the same language as the transcript. Return ONLY valid JSON.

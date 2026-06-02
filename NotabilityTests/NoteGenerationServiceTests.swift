@@ -38,6 +38,27 @@ final class NoteGenerationServiceTests: XCTestCase {
         XCTAssertEqual(notes.keyDecisions.first, "Ship in June")
     }
 
+    func test_summary_prompt_requests_a_rich_summary_without_a_two_to_three_sentence_cap() async throws {
+        let json = """
+        { "summary": "x", "action_items": [], "key_decisions": [] }
+        """
+        let client = MockHTTPClient(responseData: json.data(using: .utf8)!, statusCode: 200)
+        let sut = NoteGenerationService(httpClient: client)
+
+        _ = try await sut.generateNotes(transcript: [TranscriptChunk(timestamp: 0, text: "hi")])
+
+        let body = try XCTUnwrap(client.requests.first?.httpBody)
+        let bodyString = try XCTUnwrap(String(data: body, encoding: .utf8))
+        XCTAssertFalse(
+            bodyString.contains("2-3 sentence"),
+            "Summary prompt should not cap the summary at 2-3 sentences"
+        )
+        XCTAssertTrue(
+            bodyString.contains("comprehensive"),
+            "Summary prompt should ask for a comprehensive summary"
+        )
+    }
+
     func test_throws_on_invalid_json() async throws {
         let client = MockHTTPClient(responseData: "not json".data(using: .utf8)!, statusCode: 200)
         let sut = NoteGenerationService(httpClient: client)

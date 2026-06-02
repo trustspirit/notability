@@ -214,6 +214,31 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(sut.liveTranscript[1].text, "두 번째 주제 이야기")
     }
 
+    func test_previous_transcript_is_not_fed_back_as_prompt() async throws {
+        // Feeding the rolling transcript as the Whisper/gpt-4o-transcribe `prompt`
+        // makes generative transcription models echo it back, producing the
+        // duplicated-paragraph transcripts users reported. Every chunk must be
+        // transcribed with no prompt so nothing can be regurgitated.
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.texts = [
+            "첫 번째 문장입니다.",
+            "두 번째 문장입니다."
+        ]
+        try await sut.startRecording()
+        await Task.yield()
+
+        try emitTempChunk(capture, timestamp: 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try emitTempChunk(capture, timestamp: 6)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(transcription.receivedPrompts.count, 2)
+        XCTAssertTrue(
+            transcription.receivedPrompts.allSatisfy { $0 == nil },
+            "Expected no prompt to be sent, got: \(transcription.receivedPrompts)"
+        )
+    }
+
     func test_live_partial_merges_with_previous_unfinished_sentence_for_display() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.text = "제가 만약에"
@@ -353,6 +378,7 @@ final class MockTranscriptionService: TranscriptionServiceProtocol {
     var error: Error?
     var partials: [String] = []
     var delayNanoseconds: UInt64 = 0
+    private(set) var receivedPrompts: [String?] = []
 
     func transcribe(
         audioURL: URL,
@@ -360,6 +386,7 @@ final class MockTranscriptionService: TranscriptionServiceProtocol {
         prompt: String?,
         onPartialTranscript: TranscriptionPartialHandler?
     ) async throws -> TranscriptChunk {
+        receivedPrompts.append(prompt)
         if let error { throw error }
         for partial in partials {
             await onPartialTranscript?(partial)

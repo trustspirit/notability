@@ -34,8 +34,6 @@ final class RecordingCoordinator: ObservableObject {
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
     private var levelCancellable: AnyCancellable?
-    // Last ~200 chars of transcript sent as Whisper prompt to preserve context across chunk boundaries.
-    private var lastTranscriptContext: String = ""
 
     private static let titleFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -69,7 +67,6 @@ final class RecordingCoordinator: ObservableObject {
         visibleLiveTranscript = []
         livePartialTranscriptToken = nil
         pendingTranscriptionCount = 0
-        lastTranscriptContext = ""
         chunkHandlingTask?.cancel()
 
         // Start capture first — only save meeting if it actually succeeds.
@@ -177,11 +174,14 @@ final class RecordingCoordinator: ObservableObject {
             try? FileManager.default.removeItem(at: chunk.url)
         }
         do {
-            let ctx = lastTranscriptContext
+            // No rolling-transcript prompt: generative transcription models
+            // (gpt-4o-transcribe) echo the prompt back into their output, which
+            // produced duplicated-paragraph transcripts. Each chunk is transcribed
+            // independently so nothing can be regurgitated.
             let transcriptChunk = try await transcription.transcribe(
                 audioURL: chunk.url,
                 timestamp: chunk.timestamp,
-                prompt: ctx.isEmpty ? nil : ctx,
+                prompt: nil,
                 onPartialTranscript: { [weak self] partial in
                     await self?.updateLivePartialTranscript(partial, timestamp: chunk.timestamp, token: partialToken)
                 }
@@ -192,12 +192,6 @@ final class RecordingCoordinator: ObservableObject {
             }
             clearLivePartialTranscript(token: partialToken)
             addTranscriptChunk(transcriptChunk)
-            // Keep last ~200 chars as context for the next chunk to prevent sentence cutting.
-            let allText = liveTranscript
-                .filter { !Self.isTranscriptionFailure($0.text) && Self.isMeaningfulTranscript($0.text) }
-                .map(\.text)
-                .joined(separator: " ")
-            lastTranscriptContext = String(allText.suffix(200))
         } catch {
             clearLivePartialTranscript(token: partialToken)
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
