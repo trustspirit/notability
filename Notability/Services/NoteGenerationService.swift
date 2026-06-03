@@ -2,7 +2,7 @@ import Foundation
 
 final class NoteGenerationService: NoteGenerationServiceProtocol {
     enum APIError: Error, LocalizedError {
-        case httpError(Int)
+        case httpError(Int, String?)
         case missingContent
         case invalidResponse
         case missingAPIKey
@@ -11,7 +11,8 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
             switch self {
             case .missingAPIKey:
                 return "OpenAI API key is not set. Go to Settings and enter your API key."
-            case .httpError(let code):
+            case .httpError(let code, let message):
+                if let message { return "OpenAI error (\(code)): \(message)" }
                 return "OpenAI API returned HTTP \(code). Check your API key and quota."
             case .missingContent:
                 return "OpenAI returned an empty response."
@@ -56,7 +57,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
                 ["role": "user", "content": userContent]
             ]
         ]
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/chat/completions")!)
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/chat/completions")!, timeoutInterval: 180)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -64,7 +65,12 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
         let (data, response) = try await httpClient.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.httpError(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+                .flatMap { $0["error"] as? [String: Any] }
+                .flatMap { $0["message"] as? String }
+            throw APIError.httpError(http.statusCode, message)
+        }
 
         // The mock in tests returns JSON directly (no "choices" wrapper).
         // In production, GPT returns {"choices":[{"message":{"content":"..."}}]}.

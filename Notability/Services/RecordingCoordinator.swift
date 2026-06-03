@@ -166,6 +166,28 @@ final class RecordingCoordinator: ObservableObject {
         }
     }
 
+    func retryNoteGeneration(meetingId: UUID) {
+        Task {
+            guard var meeting = store.fetch(id: meetingId) else { return }
+            let validTranscript = meeting.transcript.filter { !Self.isTranscriptionFailure($0.text) }
+            guard !validTranscript.isEmpty else { return }
+            meeting.notesGenerationError = nil
+            meeting.notes = nil
+            store.save(meeting)
+            do {
+                let notes = try await noteGeneration.generateNotes(transcript: validTranscript)
+                meeting.notes = notes
+                meeting.notesGenerationError = nil
+                store.save(meeting)
+                sendCompletionNotification()
+            } catch {
+                meeting.notesGenerationError = error.localizedDescription
+                store.save(meeting)
+                sendFailureNotification()
+            }
+        }
+    }
+
     private func handleChunk(_ chunk: AudioChunk) async {
         pendingTranscriptionCount += 1
         let partialToken = UUID()

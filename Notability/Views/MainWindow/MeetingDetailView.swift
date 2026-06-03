@@ -4,6 +4,7 @@ import AppKit
 struct MeetingDetailView: View {
     let meeting: Meeting
     @EnvironmentObject var store: MeetingStore
+    @EnvironmentObject var coordinator: RecordingCoordinator
     @State private var selectedTab: DetailTab = .summary
     @State private var titleInput = ""
     @State private var titleHover = false
@@ -170,7 +171,10 @@ struct MeetingDetailView: View {
             BrandedEmptyState(
                 title: "Note generation failed",
                 systemImage: "exclamationmark.triangle.fill",
-                message: error
+                message: error,
+                action: meeting.transcript.isEmpty ? nil : ("Retry", {
+                    coordinator.retryNoteGeneration(meetingId: meeting.id)
+                })
             )
         } else {
             BrandedEmptyState(
