@@ -2,6 +2,27 @@ import Foundation
 import Combine
 import UserNotifications
 
+private actor AsyncSemaphore {
+    private var count: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { count = limit }
+
+    func wait() async {
+        if count > 0 { count -= 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func signal() {
+        if let first = waiters.first {
+            waiters.removeFirst()
+            first.resume()
+        } else {
+            count += 1
+        }
+    }
+}
+
 @MainActor
 final class RecordingCoordinator: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
@@ -27,6 +48,7 @@ final class RecordingCoordinator: ObservableObject {
 
     private let audioCapture: AudioCaptureServiceProtocol
     private let transcription: TranscriptionServiceProtocol
+    private let transcriptionSemaphore = AsyncSemaphore(limit: 4)
     private let noteGeneration: NoteGenerationServiceProtocol
     private let store: MeetingStoreProtocol
     private var chunkHandlingTask: Task<Void, Never>?
@@ -195,6 +217,10 @@ final class RecordingCoordinator: ObservableObject {
             pendingTranscriptionCount = max(0, pendingTranscriptionCount - 1)
             try? FileManager.default.removeItem(at: chunk.url)
         }
+        // Limit concurrent API calls so a burst of mic+system chunks doesn't
+        // saturate the OpenAI rate limit and produce 429-driven transcription gaps.
+        await transcriptionSemaphore.wait()
+        defer { Task { await self.transcriptionSemaphore.signal() } }
         do {
             // No rolling-transcript prompt: generative transcription models
             // (gpt-4o-transcribe) echo the prompt back into their output, which

@@ -19,22 +19,31 @@ final class AudioChunker {
 
     private static let sampleRate: Double = 16_000
 
-    // Silence threshold for per-buffer boundary detection (slightly above background hiss).
-    private static let boundaryThreshold: Float = 0.003
-    // Whole-chunk thresholds: filter low-level room noise that ASR models often
-    // hallucinate as short filler syllables.
-    private static let speechThreshold: Float = 0.005
-    private static let strongSpeechThreshold: Float = 0.015
     private static let minSpeechDuration: Double = 0.2
     private static let analysisWindowFrames = 320 // 20 ms at 16 kHz
 
     // Fallback max duration — emit even without a silence boundary (non-stop speech).
     // Exposed as init parameter for testability.
     private let maxChunkDuration: Double
+    // Whole-chunk thresholds: filter low-level room noise that ASR models often
+    // hallucinate as short filler syllables. Microphone input is typically quieter
+    // than system audio, so these should be lower for mic sources.
+    private let speechThreshold: Float
+    private let strongSpeechThreshold: Float
+    // Frames below this RMS count as silence for sentence-boundary detection.
+    // Should sit above the source's noise floor so background hiss doesn't prevent
+    // pause detection; mic sources need a slightly higher value than system audio.
+    private let boundaryThreshold: Float
 
     init(chunkDuration: Double = 6.0,
+         speechThreshold: Float = 0.005,
+         strongSpeechThreshold: Float = 0.015,
+         boundaryThreshold: Float = 0.003,
          outputDirectory: URL = FileManager.default.temporaryDirectory) {
         self.maxChunkDuration = chunkDuration
+        self.speechThreshold = speechThreshold
+        self.strongSpeechThreshold = strongSpeechThreshold
+        self.boundaryThreshold = boundaryThreshold
         self.outputDirectory = outputDirectory
     }
 
@@ -60,7 +69,7 @@ final class AudioChunker {
         accumulatedFrames += buffer.frameLength
 
         // Track consecutive silence frames for sentence boundary detection.
-        if rmsOf(buffer) < Self.boundaryThreshold {
+        if rmsOf(buffer) < boundaryThreshold {
             consecutiveSilentFrames += buffer.frameLength
         } else {
             consecutiveSilentFrames = 0
@@ -82,14 +91,16 @@ final class AudioChunker {
 
     private func _flush() {
         guard accumulatedFrames > 0 else { return }
-        _emitChunk()
+        // Skip the speech-activity filter on flush: the user stopped recording,
+        // so we trust that any remaining audio is intentional and should be sent.
+        _emitChunk(force: true)
     }
 
-    private func _emitChunk() {
+    private func _emitChunk(force: Bool = false) {
         guard !accumulatedBuffers.isEmpty else { return }
         // Drop chunks that do not contain sustained speech-like activity. Sending
         // these to ASR tends to produce filler hallucinations such as repeated "아".
-        guard containsSpeechActivity() else {
+        guard force || containsSpeechActivity() else {
             resetState()
             return
         }
@@ -138,7 +149,7 @@ final class AudioChunker {
     private func containsSpeechActivity() -> Bool {
         let activity = speechActivity()
         let activeDuration = Double(activity.activeFrames) / Self.sampleRate
-        return activeDuration >= Self.minSpeechDuration || activity.peakRMS >= Self.strongSpeechThreshold
+        return activeDuration >= Self.minSpeechDuration || activity.peakRMS >= strongSpeechThreshold
     }
 
     // Whole-chunk activity over short windows — used to filter silence and
@@ -153,7 +164,7 @@ final class AudioChunker {
             guard windowCount > 0 else { return }
             let windowRMS = sqrt(windowSum / Float(windowCount))
             peakRMS = max(peakRMS, windowRMS)
-            if windowRMS >= Self.speechThreshold {
+            if windowRMS >= speechThreshold {
                 activeFrames += windowCount
             }
             windowSum = 0

@@ -26,7 +26,10 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     private var startDate: Date?
 
     private let systemAudioChunker = AudioChunker()
-    private let micChunker = AudioChunker()
+    // Microphone RMS is typically lower than system audio, so use relaxed thresholds.
+    // boundaryThreshold sits above the mic noise floor (~0.002) so background hiss
+    // doesn't prevent silence detection and natural chunk boundaries are preserved.
+    private let micChunker = AudioChunker(speechThreshold: 0.003, strongSpeechThreshold: 0.008, boundaryThreshold: 0.004)
 
     private var cachedAudioConverter: AVAudioConverter?
     private var cachedMicConverter: AVAudioConverter?
