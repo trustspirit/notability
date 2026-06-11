@@ -168,6 +168,23 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertNil(audioAPI.calls.first?.prompt)
     }
 
+    func test_prompt_echo_is_discarded() async throws {
+        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
+        ModelSettings.shared.transcriptionLanguage = "ko"
+
+        // Simulate gpt-4o-transcribe echoing the language hint on a silent clip
+        let audioAPI = MockTranscriber(text: "다음은 한국어 회의 내용입니다.")
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
+
+        XCTAssertEqual(chunk.text, "")
+    }
+
     func test_no_language_hint_when_language_is_not_set() async throws {
         ModelSettings.shared.transcriptionLanguage = ""
 

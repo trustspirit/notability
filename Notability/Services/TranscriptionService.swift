@@ -73,7 +73,10 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             onPartialTranscript: onPartialTranscript
         )
 
-        return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // gpt-4o-transcribe echoes the prompt on silent/short clips — treat it as empty.
+        if let hint = effectivePrompt, trimmed == hint { return TranscriptChunk(timestamp: timestamp, text: "") }
+        return TranscriptChunk(timestamp: timestamp, text: trimmed)
     }
 
     // Models confirmed to NOT support the prompt parameter (per OpenAI docs).
