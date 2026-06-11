@@ -114,7 +114,11 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
 
     private static let systemPrompt = """
         You are a meeting notes assistant. Given a meeting transcript, extract and return a JSON object with exactly these keys:
-        - "summary": A comprehensive summary of the meeting written as well-structured prose (multiple paragraphs when the discussion warrants it). Cover the main topics discussed, the context and reasoning behind them, important points raised by participants, and the outcomes or open questions. Be thorough and specific rather than generic — capture what actually makes this meeting distinct. Do not artificially limit the length; match the depth of the discussion.
+        - "summary": A structured meeting summary using Markdown with exactly these four sections (use the same language as the transcript for all content; use the exact header names below translated if needed):
+          **논의 사항** (or "Discussion" in English transcripts): bullet points covering what was discussed — include context, reasoning, and who raised each point.
+          **결정 사항** (or "Decisions"): bullet points for each conclusion or agreement reached. Be specific — not "agreed to proceed" but what exactly was agreed.
+          **미결 사항** (or "Open Items"): bullet points for questions or topics that were not resolved and need to be decided at a future meeting. If none, write "없음" (or "None").
+          **액션 아이템** (or "Action Items"): list every action item grouped by assignee or team. Format each group as "**[이름/팀]**" followed by their items as sub-bullets. Unassigned items go under "**미배정**" (or "Unassigned"). Include due dates where mentioned.
         - "action_items": Array of objects with keys "description" (string), "assignee" (string or null), "due_date" (string or null).
         - "key_decisions": Array of strings, each a key decision made.
         Respond in the same language as the transcript. Return ONLY valid JSON.
