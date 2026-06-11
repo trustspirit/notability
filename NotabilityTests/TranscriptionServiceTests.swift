@@ -51,7 +51,7 @@ final class TranscriptionServiceTests: XCTestCase {
         do {
             _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
             XCTFail("Expected error")
-        } catch TranscriptionService.APIError.httpError(let code) {
+        } catch TranscriptionService.APIError.httpError(let code, _) {
             XCTAssertEqual(code, 401)
         }
     }
@@ -136,8 +136,24 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(audioAPI.calls.first?.prompt, "회의 용어")
     }
 
-    func test_no_language_hint_for_gpt4o_transcribe() async throws {
+    func test_language_hint_injected_for_gpt4o_transcribe() async throws {
         ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
+        ModelSettings.shared.transcriptionLanguage = "ko"
+
+        let audioAPI = MockTranscriber(text: "결과")
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
+
+        XCTAssertEqual(audioAPI.calls.first?.prompt, "다음은 한국어 회의 내용입니다.")
+    }
+
+    func test_no_language_hint_for_diarize_model() async throws {
+        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe-diarize"
         ModelSettings.shared.transcriptionLanguage = "ko"
 
         let audioAPI = MockTranscriber(text: "결과")

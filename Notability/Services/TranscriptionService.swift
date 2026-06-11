@@ -3,7 +3,7 @@ import Foundation
 
 final class TranscriptionService: TranscriptionServiceProtocol {
     enum APIError: Error, LocalizedError {
-        case httpError(Int)
+        case httpError(Int, String?)
         case invalidResponse
         case missingAPIKey
 
@@ -11,8 +11,13 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             switch self {
             case .missingAPIKey:
                 return "OpenAI API key is not set. Go to Settings and enter your API key."
-            case .httpError(let code):
-                return "OpenAI API returned HTTP \(code). Check your API key and quota."
+            case .httpError(let code, let detail):
+                switch code {
+                case 400: return "Transcription request was rejected (HTTP 400)\(detail.map { ": \($0)" } ?? ""). Check the selected model and language settings."
+                case 401: return "Invalid OpenAI API key (HTTP 401). Go to Settings and verify your key."
+                case 429: return "OpenAI rate limit or quota exceeded (HTTP 429). Try again shortly."
+                default:  return "OpenAI API returned HTTP \(code)\(detail.map { ": \($0)" } ?? "")."
+                }
             case .invalidResponse:
                 return "Received an unexpected response from OpenAI."
             }
@@ -71,9 +76,11 @@ final class TranscriptionService: TranscriptionServiceProtocol {
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    // Models confirmed to NOT support the prompt parameter (per OpenAI docs).
+    private static let modelsWithoutPromptSupport: Set<String> = ["gpt-4o-transcribe-diarize"]
+
     private static func staticLanguageHint(model: String, language: String?) -> String? {
-        // Only whisper-1 accepts the prompt parameter; gpt-4o-* models reject it with HTTP 400.
-        guard model == "whisper-1", let language else { return nil }
+        guard !modelsWithoutPromptSupport.contains(model), let language else { return nil }
         switch language {
         case "ko": return "다음은 한국어 회의 내용입니다."
         case "ja": return "以下は日本語の会議内容です。"
@@ -133,7 +140,12 @@ final class AudioAPITranscriber: OpenAITranscriber {
 
         let (data, response) = try await httpClient.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw TranscriptionService.APIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { throw TranscriptionService.APIError.httpError(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+                .flatMap { $0["error"] as? [String: Any] }
+                .flatMap { $0["message"] as? String }
+            throw TranscriptionService.APIError.httpError(http.statusCode, detail)
+        }
 
         return String(data: data, encoding: .utf8) ?? ""
     }
