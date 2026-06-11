@@ -54,17 +54,31 @@ final class TranscriptionService: TranscriptionServiceProtocol {
 
         let model = settings.transcriptionModel
         let language = settings.transcriptionLanguage.isEmpty ? nil : settings.transcriptionLanguage
+        // Static language-anchor prompt: unlike rolling-transcript prompts (which
+        // gpt-4o-transcribe echoes verbatim), a short non-content phrase just sets the
+        // language register and doesn't risk duplicating meeting content.
+        let effectivePrompt = prompt ?? Self.staticLanguageHint(model: model, language: language)
         let transcriber = selectedTranscriber(for: model)
         let text = try await transcriber.transcribe(
             audioURL: audioURL,
             apiKey: apiKey,
             model: model,
             language: language,
-            prompt: prompt,
+            prompt: effectivePrompt,
             onPartialTranscript: onPartialTranscript
         )
 
         return TranscriptChunk(timestamp: timestamp, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func staticLanguageHint(model: String, language: String?) -> String? {
+        guard let language else { return nil }
+        switch language {
+        case "ko": return "다음은 한국어 회의 내용입니다."
+        case "ja": return "以下は日本語の会議内容です。"
+        case "zh": return "以下是中文会议内容。"
+        default:   return nil
+        }
     }
 
     private func selectedTranscriber(for model: String) -> any OpenAITranscriber {

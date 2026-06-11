@@ -222,10 +222,9 @@ final class RecordingCoordinator: ObservableObject {
         await transcriptionSemaphore.wait()
         defer { Task { await self.transcriptionSemaphore.signal() } }
         do {
-            // No rolling-transcript prompt: generative transcription models
-            // (gpt-4o-transcribe) echo the prompt back into their output, which
-            // produced duplicated-paragraph transcripts. Each chunk is transcribed
-            // independently so nothing can be regurgitated.
+            // prompt: nil — rolling-transcript prompts caused gpt-4o-transcribe to echo
+            // previous content into new chunks. TranscriptionService injects a short
+            // static language-anchor prompt instead, which doesn't trigger that echo.
             let transcriptChunk = try await transcription.transcribe(
                 audioURL: chunk.url,
                 timestamp: chunk.timestamp,

@@ -103,6 +103,52 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(partials, ["실시간", "실시간 자막"])
     }
 
+    func test_language_hint_prompt_injected_when_language_is_ko() async throws {
+        ModelSettings.shared.transcriptionLanguage = "ko"
+
+        let audioAPI = MockTranscriber(text: "안녕하세요")
+        let realtimeAPI = MockTranscriber(text: "unused")
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
+
+        XCTAssertEqual(audioAPI.calls.first?.prompt, "다음은 한국어 회의 내용입니다.")
+    }
+
+    func test_explicit_prompt_overrides_language_hint() async throws {
+        ModelSettings.shared.transcriptionLanguage = "ko"
+
+        let audioAPI = MockTranscriber(text: "결과")
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0, prompt: "회의 용어")
+
+        XCTAssertEqual(audioAPI.calls.first?.prompt, "회의 용어")
+    }
+
+    func test_no_language_hint_when_language_is_not_set() async throws {
+        ModelSettings.shared.transcriptionLanguage = ""
+
+        let audioAPI = MockTranscriber(text: "result")
+        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
+
+        XCTAssertNil(audioAPI.calls.first?.prompt)
+    }
+
     func test_realtime_model_routes_to_realtime_transcriber_even_when_provider_is_audio_api() async throws {
         ModelSettings.shared.transcriptionProvider = .audioAPI
         ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
