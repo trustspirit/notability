@@ -72,7 +72,8 @@ final class TranscriptionService: TranscriptionServiceProtocol {
     }
 
     private static func staticLanguageHint(model: String, language: String?) -> String? {
-        guard let language else { return nil }
+        // Only whisper-1 accepts the prompt parameter; gpt-4o-* models reject it with HTTP 400.
+        guard model == "whisper-1", let language else { return nil }
         switch language {
         case "ko": return "다음은 한국어 회의 내용입니다."
         case "ja": return "以下は日本語の会議内容です。"
