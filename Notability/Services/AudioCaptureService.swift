@@ -16,7 +16,18 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         levelSubject.eraseToAnyPublisher()
     }
 
-    private(set) var isCapturingSystemAudio = false
+    private let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
+    var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
+        systemAudioAvailabilitySubject.eraseToAnyPublisher()
+    }
+
+    private(set) var isCapturingSystemAudio = false {
+        didSet {
+            guard oldValue != isCapturingSystemAudio else { return }
+            systemAudioAvailabilitySubject.send(isCapturingSystemAudio)
+        }
+    }
+    private(set) var isCapturingMicrophone = false
     // Guards processBuffer after stopCapture() — prevents post-stopRunning callbacks
     // from appending to chunkers after flush() has already been called.
     private var isCapturing = false
@@ -66,10 +77,21 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         subject.send(completion: .finished)
         subject = PassthroughSubject()
         isCapturingSystemAudio = false
+        isCapturingMicrophone = false
 
         // Microphone via AVCaptureSession — only needs Microphone permission.
         // This permission persists across app updates unlike Screen Recording.
+        guard await requestMicrophoneAccessIfNeeded() else {
+            throw CaptureError.microphonePermissionDenied
+        }
+        startDate = Date()
+        isCapturing = true
         startMicrophoneCapture()
+        guard isCapturingMicrophone else {
+            isCapturing = false
+            startDate = nil
+            throw CaptureError.microphoneUnavailable
+        }
 
         // System audio via ScreenCaptureKit — needs Screen Recording permission.
         // Non-fatal if denied: recording continues with microphone only.
@@ -78,14 +100,10 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         guard isCapturingSystemAudio || captureSession?.isRunning == true else {
             throw CaptureError.noAudioSource
         }
-
-        startDate = Date()
-        isCapturing = true
     }
 
     private func startMicrophoneCapture() {
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-              let mic = AVCaptureDevice.default(for: .audio) else { return }
+        guard let mic = AVCaptureDevice.default(for: .audio) else { return }
 
         let session = AVCaptureSession()
         guard let input = try? AVCaptureDeviceInput(device: mic) else { return }
@@ -96,7 +114,30 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         session.addInput(input)
         session.addOutput(output)
         session.startRunning()
-        captureSession = session
+        if session.isRunning {
+            captureSession = session
+            isCapturingMicrophone = true
+        } else {
+            captureSession = nil
+            isCapturingMicrophone = false
+        }
+    }
+
+    private func requestMicrophoneAccessIfNeeded() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
     }
 
     private func startSystemAudioCapture() async {
@@ -135,6 +176,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         stream = nil
         captureSession?.stopRunning()
         captureSession = nil
+        isCapturingSystemAudio = false
+        isCapturingMicrophone = false
         systemAudioChunker.flush()
         micChunker.flush()
         subject.send(completion: .finished)
@@ -148,7 +191,16 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        handleSystemAudioCaptureStopped()
+    }
+
+    func handleSystemAudioCaptureStopped() {
+        stream = nil
         systemAudioChunker.flush()
+        isCapturingSystemAudio = false
+
+        guard isCapturing, !isCapturingMicrophone else { return }
+        isCapturing = false
         micChunker.flush()
         subject.send(completion: .finished)
     }
@@ -226,9 +278,18 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
 
     enum CaptureError: Error, LocalizedError {
         case noAudioSource
+        case microphonePermissionDenied
+        case microphoneUnavailable
 
         var errorDescription: String? {
-            "Microphone access is required. Go to System Settings → Privacy → Microphone."
+            switch self {
+            case .noAudioSource:
+                return "No audio source is available. Grant Microphone access or Screen Recording access, then try again."
+            case .microphonePermissionDenied:
+                return "Microphone access is required so your voice is included in the transcript. Go to System Settings → Privacy & Security → Microphone and enable Notability."
+            case .microphoneUnavailable:
+                return "Could not start microphone capture. Check your input device and Microphone privacy settings, then try again."
+            }
         }
     }
 }

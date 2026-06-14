@@ -3,46 +3,42 @@ import Foundation
 final class ModelSettings: ObservableObject {
     static let shared = ModelSettings()
 
-    enum TranscriptionProvider: String, CaseIterable, Identifiable {
-        case audioAPI
-        case realtimeAPI
+    enum TranscriptionMethod: String, CaseIterable, Identifiable {
+        case realtimeWhisper
+        case gpt4oTranscribe
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .audioAPI: return "Audio API"
-            case .realtimeAPI: return "Realtime API"
+            case .realtimeWhisper: return "Realtime Whisper"
+            case .gpt4oTranscribe: return "GPT-4o Transcribe"
             }
         }
 
-        var defaultModel: String {
+        var model: String {
             switch self {
-            case .audioAPI: return "gpt-4o-transcribe"
-            case .realtimeAPI: return "gpt-realtime-whisper"
+            case .realtimeWhisper: return ModelSettings.realtimeWhisperModel
+            case .gpt4oTranscribe: return ModelSettings.gpt4oTranscribeModel
             }
         }
 
-        var models: [String] {
+        var description: String {
             switch self {
-            case .audioAPI: return ModelSettings.audioTranscriptionModels
-            case .realtimeAPI: return ModelSettings.realtimeTranscriptionModels
+            case .realtimeWhisper:
+                return "Fast live scribe with partial transcript updates. Higher cost per minute."
+            case .gpt4oTranscribe:
+                return "Request/response chunk transcription with lower cost and stable final text."
             }
         }
     }
 
-    static let audioTranscriptionModels = [
-        "gpt-4o-transcribe",
-        "gpt-4o-mini-transcribe",
-        "gpt-4o-transcribe-diarize",
-        "whisper-1"
-    ]
+    static let realtimeWhisperModel = "gpt-realtime-whisper"
+    static let gpt4oTranscribeModel = "gpt-4o-transcribe"
 
-    static let realtimeTranscriptionModels = [
-        "gpt-realtime-whisper"
-    ]
-
-    static let transcriptionModels = audioTranscriptionModels + realtimeTranscriptionModels
+    static let realtimeTranscriptionModels = [realtimeWhisperModel]
+    static let audioTranscriptionModels = [gpt4oTranscribeModel]
+    static let transcriptionModels = TranscriptionMethod.allCases.map(\.model)
 
     static let noteModels = [
         "gpt-5.5",
@@ -55,27 +51,25 @@ final class ModelSettings: ObservableObject {
     // Keeps prompt size bounded and limits how far user text can drown out the base contract.
     static let noteInstructionsMaxLength = 2000
 
-    @Published var transcriptionProvider: TranscriptionProvider {
-        didSet {
-            UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: "transcriptionProvider")
-            if !transcriptionProvider.models.contains(transcriptionModel) {
-                transcriptionModel = transcriptionProvider.defaultModel
-            }
-        }
+    private let defaults: UserDefaults
+
+    @Published var transcriptionMethod: TranscriptionMethod {
+        didSet { persistTranscriptionSelection() }
     }
 
-    @Published var transcriptionModel: String {
-        didSet { UserDefaults.standard.set(transcriptionModel, forKey: "transcriptionModel") }
+    var transcriptionModel: String {
+        get { transcriptionMethod.model }
+        set { transcriptionMethod = Self.method(forModel: newValue) }
     }
 
     @Published var noteModel: String {
-        didSet { UserDefaults.standard.set(noteModel, forKey: "noteModel") }
+        didSet { defaults.set(noteModel, forKey: "noteModel") }
     }
 
-    // BCP-47 language code sent to Whisper (e.g. "ko", "en", "ja").
-    // Empty string = let Whisper auto-detect, but auto-detect can misfire on short clips.
+    // BCP-47 language code sent to transcription APIs (e.g. "ko", "en", "ja").
+    // Empty string = let the API auto-detect.
     @Published var transcriptionLanguage: String {
-        didSet { UserDefaults.standard.set(transcriptionLanguage, forKey: "transcriptionLanguage") }
+        didSet { defaults.set(transcriptionLanguage, forKey: "transcriptionLanguage") }
     }
 
     // Optional free-text instructions appended to the note-generation system prompt.
@@ -88,28 +82,43 @@ final class ModelSettings: ObservableObject {
                 noteInstructions = String(noteInstructions.prefix(Self.noteInstructionsMaxLength))
                 return  // didSet re-fires with the clamped value
             }
-            UserDefaults.standard.set(noteInstructions, forKey: "noteInstructions")
+            defaults.set(noteInstructions, forKey: "noteInstructions")
         }
     }
 
-    private init() {
-        let providerRaw = UserDefaults.standard.string(forKey: "transcriptionProvider")
-        let savedProvider = TranscriptionProvider(rawValue: providerRaw ?? "") ?? .audioAPI
-        let savedTranscriptionModel = UserDefaults.standard.string(forKey: "transcriptionModel")
+    init(userDefaults: UserDefaults = .standard) {
+        defaults = userDefaults
+        transcriptionMethod = Self.savedTranscriptionMethod(in: userDefaults)
+        noteModel = userDefaults.string(forKey: "noteModel") ?? "gpt-5.5"
+        transcriptionLanguage = userDefaults.string(forKey: "transcriptionLanguage") ?? "ko"
+        noteInstructions = userDefaults.string(forKey: "noteInstructions") ?? ""
+        persistTranscriptionSelection()
+    }
 
-        if let savedTranscriptionModel, savedProvider.models.contains(savedTranscriptionModel) {
-            transcriptionProvider = savedProvider
-            transcriptionModel = savedTranscriptionModel
-        } else if let savedTranscriptionModel, Self.realtimeTranscriptionModels.contains(savedTranscriptionModel) {
-            transcriptionProvider = .realtimeAPI
-            transcriptionModel = savedTranscriptionModel
-        } else {
-            transcriptionProvider = savedProvider
-            transcriptionModel = savedProvider.defaultModel
+    private func persistTranscriptionSelection() {
+        defaults.set(transcriptionMethod.rawValue, forKey: "transcriptionMethod")
+        defaults.set(transcriptionMethod.model, forKey: "transcriptionModel")
+        defaults.removeObject(forKey: "transcriptionProvider")
+    }
+
+    private static func savedTranscriptionMethod(in defaults: UserDefaults) -> TranscriptionMethod {
+        if
+            let rawMethod = defaults.string(forKey: "transcriptionMethod"),
+            let method = TranscriptionMethod(rawValue: rawMethod)
+        {
+            return method
         }
 
-        noteModel = UserDefaults.standard.string(forKey: "noteModel") ?? "gpt-5.5"
-        transcriptionLanguage = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "ko"
-        noteInstructions = UserDefaults.standard.string(forKey: "noteInstructions") ?? ""
+        let legacyProvider = defaults.string(forKey: "transcriptionProvider")
+        let legacyModel = defaults.string(forKey: "transcriptionModel")
+
+        if legacyProvider == "realtimeAPI" || legacyModel == realtimeWhisperModel {
+            return .realtimeWhisper
+        }
+        return .gpt4oTranscribe
+    }
+
+    private static func method(forModel model: String) -> TranscriptionMethod {
+        model == realtimeWhisperModel ? .realtimeWhisper : .gpt4oTranscribe
     }
 }

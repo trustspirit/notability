@@ -52,10 +52,13 @@ final class RecordingCoordinator: ObservableObject {
     private let noteGeneration: NoteGenerationServiceProtocol
     private let store: MeetingStoreProtocol
     private var chunkHandlingTask: Task<Void, Never>?
+    private var chunkCancellable: AnyCancellable?
+    private var chunkStreamContinuation: AsyncStream<AudioChunk>.Continuation?
     @Published private(set) var currentMeetingId: UUID?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
     private var levelCancellable: AnyCancellable?
+    private var systemAudioAvailabilityCancellable: AnyCancellable?
 
     private static let titleFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -90,10 +93,20 @@ final class RecordingCoordinator: ObservableObject {
         livePartialTranscriptToken = nil
         pendingTranscriptionCount = 0
         chunkHandlingTask?.cancel()
+        chunkStreamContinuation?.finish()
+        chunkCancellable?.cancel()
+        systemAudioAvailabilityCancellable?.cancel()
 
         // Start capture first — only save meeting if it actually succeeds.
         try await audioCapture.startCapture()
+        guard audioCapture.isCapturingMicrophone else {
+            await audioCapture.stopCapture()
+            throw CaptureAvailabilityError.microphoneUnavailable
+        }
         systemAudioAvailable = audioCapture.isCapturingSystemAudio
+        systemAudioAvailabilityCancellable = audioCapture.systemAudioAvailabilityPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] available in self?.systemAudioAvailable = available }
 
         let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
         let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
@@ -118,17 +131,33 @@ final class RecordingCoordinator: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         elapsedTimer = timer
 
-        // Consume chunks concurrently. The group exits only after the publisher
-        // completes (signalled by stopCapture() → subject.send(completion:)),
-        // guaranteeing all in-flight transcriptions finish before stopRecording
-        // proceeds past `await chunkHandlingTask?.value`.
-        let publisher = audioCapture.chunkPublisher
+        // Use a sink-backed AsyncStream instead of publisher.values. PassthroughSubject
+        // can emit faster than the async loop polls; sink requests unlimited demand
+        // and forwards every chunk into the stream while the worker pool below keeps
+        // actual transcription concurrency bounded.
+        var continuation: AsyncStream<AudioChunk>.Continuation?
+        let chunkStream = AsyncStream<AudioChunk>(bufferingPolicy: .unbounded) { streamContinuation in
+            continuation = streamContinuation
+        }
+        guard let continuation else { return }
+        chunkStreamContinuation = continuation
+        chunkCancellable = audioCapture.chunkPublisher.sink(
+            receiveCompletion: { _ in continuation.finish() },
+            receiveValue: { chunk in continuation.yield(chunk) }
+        )
+
         chunkHandlingTask = Task { @MainActor [weak self] in
             await withTaskGroup(of: Void.self) { group in
-                for await chunk in publisher.values {
+                for await chunk in chunkStream {
                     guard let self else { break }
+                    await self.transcriptionSemaphore.wait()
+                    self.pendingTranscriptionCount += 1
+                    let semaphore = self.transcriptionSemaphore
                     group.addTask { [weak self] in
-                        guard let self else { return }
+                        guard let self else {
+                            await semaphore.signal()
+                            return
+                        }
                         await self.handleChunk(chunk)
                     }
                 }
@@ -147,8 +176,14 @@ final class RecordingCoordinator: ObservableObject {
         // sends .finished on the publisher, causing the for-await loop in
         // chunkHandlingTask to exit after all in-flight Tasks complete.
         await audioCapture.stopCapture()
+        chunkStreamContinuation?.finish()
         await chunkHandlingTask?.value
         chunkHandlingTask = nil
+        chunkCancellable?.cancel()
+        chunkCancellable = nil
+        chunkStreamContinuation = nil
+        systemAudioAvailabilityCancellable?.cancel()
+        systemAudioAvailabilityCancellable = nil
 
         guard let id = currentMeetingId else { return }
         defer {
@@ -211,26 +246,21 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func handleChunk(_ chunk: AudioChunk) async {
-        pendingTranscriptionCount += 1
         let partialToken = UUID()
         defer {
             pendingTranscriptionCount = max(0, pendingTranscriptionCount - 1)
             try? FileManager.default.removeItem(at: chunk.url)
+            Task { await self.transcriptionSemaphore.signal() }
         }
-        // Limit concurrent API calls so a burst of mic+system chunks doesn't
-        // saturate the OpenAI rate limit and produce 429-driven transcription gaps.
-        await transcriptionSemaphore.wait()
-        defer { Task { await self.transcriptionSemaphore.signal() } }
         do {
-            // prompt: nil — rolling-transcript prompts caused gpt-4o-transcribe to echo
-            // previous content into new chunks. TranscriptionService injects a short
-            // static language-anchor prompt instead, which doesn't trigger that echo.
+            // prompt: nil — rolling-transcript prompts caused transcription models
+            // to echo previous content into new chunks.
             let transcriptChunk = try await transcription.transcribe(
                 audioURL: chunk.url,
                 timestamp: chunk.timestamp,
                 prompt: nil,
                 onPartialTranscript: { [weak self] partial in
-                    await self?.updateLivePartialTranscript(partial, timestamp: chunk.timestamp, token: partialToken)
+                    self?.updateLivePartialTranscript(partial, timestamp: chunk.timestamp, token: partialToken)
                 }
             )
             guard !transcriptChunk.text.isEmpty, Self.isMeaningfulTranscript(transcriptChunk.text) else {
@@ -241,18 +271,33 @@ final class RecordingCoordinator: ObservableObject {
             addTranscriptChunk(transcriptChunk)
         } catch {
             clearLivePartialTranscript(token: partialToken)
+            guard !Self.shouldDropTranscriptionError(error) else { return }
             let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
             addTranscriptChunk(errorChunk)
         }
     }
 
     private func addTranscriptChunk(_ chunk: TranscriptChunk) {
-        let merged = Self.mergedTranscriptEntries(
-            from: liveTranscriptMergeEntries
-                + [(row: chunk, lastSourceTimestamp: chunk.timestamp)]
-        )
-        liveTranscriptRows = merged.map {
-            LiveTranscriptRow(chunk: $0.row, lastSourceTimestamp: $0.lastSourceTimestamp)
+        let entry: TranscriptMergeEntry = (row: chunk, lastSourceTimestamp: chunk.timestamp)
+        if let last = liveTranscriptRows.last, chunk.timestamp >= last.chunk.timestamp {
+            var rows = liveTranscriptRows
+            let mergedTail = Self.mergedTranscriptEntries(
+                from: [(row: last.chunk, lastSourceTimestamp: last.lastSourceTimestamp), entry]
+            )
+            if mergedTail.count == 1, let merged = mergedTail.first {
+                rows[rows.count - 1] = LiveTranscriptRow(
+                    chunk: merged.row,
+                    lastSourceTimestamp: merged.lastSourceTimestamp
+                )
+            } else {
+                rows.append(LiveTranscriptRow(chunk: chunk, lastSourceTimestamp: chunk.timestamp))
+            }
+            liveTranscriptRows = rows
+        } else {
+            let merged = Self.mergedTranscriptEntries(from: liveTranscriptMergeEntries + [entry])
+            liveTranscriptRows = merged.map {
+                LiveTranscriptRow(chunk: $0.row, lastSourceTimestamp: $0.lastSourceTimestamp)
+            }
         }
         updateVisibleLiveTranscript()
         persistCurrentTranscriptSnapshot()
@@ -304,6 +349,11 @@ final class RecordingCoordinator: ObservableObject {
 
     private static func isTranscriptionFailure(_ text: String) -> Bool {
         text.hasPrefix(transcriptionFailurePrefix)
+    }
+
+    private static func shouldDropTranscriptionError(_ error: Error) -> Bool {
+        guard let apiError = error as? TranscriptionService.APIError else { return false }
+        return apiError.isInvalidAudioFile
     }
 
     private var liveTranscriptMergeEntries: [TranscriptMergeEntry] {
@@ -483,5 +533,13 @@ final class RecordingCoordinator: ObservableObject {
         content.body = "Your meeting was saved but notes could not be generated."
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private enum CaptureAvailabilityError: Error, LocalizedError {
+        case microphoneUnavailable
+
+        var errorDescription: String? {
+            "Microphone capture is required so your voice is included in the transcript. Check your input device and Microphone privacy settings, then try again."
+        }
     }
 }

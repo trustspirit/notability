@@ -124,6 +124,19 @@ final class AudioChunkerTests: XCTestCase {
         XCTAssertFalse(emitted, "Silent chunks must not be emitted")
     }
 
+    func test_flush_drops_silence_without_writing_wav_file() throws {
+        let chunker = AudioChunker(outputDirectory: tempDir)
+
+        chunker.append(makeSilenceBuffer(sampleCount: 16000), timestamp: 0)
+        chunker.flush()
+
+        let files = try FileManager.default.contentsOfDirectory(
+            at: tempDir,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(files.isEmpty, "Silent flush should not create an audio file")
+    }
+
     func test_low_level_noise_chunk_is_not_emitted() {
         let chunker = AudioChunker(outputDirectory: tempDir)
         var emitted = false

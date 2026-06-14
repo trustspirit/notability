@@ -18,10 +18,14 @@ protocol MeetingStoreProtocol {
 protocol AudioCaptureServiceProtocol {
     var chunkPublisher: AnyPublisher<AudioChunk, Never> { get }
     var audioLevelPublisher: AnyPublisher<Float, Never> { get }
+    var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> { get }
     // True after startCapture() succeeds with system audio attached. False
     // when only the microphone is being captured (e.g. user denied screen
     // recording permission). Read after startCapture() returns.
     var isCapturingSystemAudio: Bool { get }
+    // True after startCapture() succeeds with microphone input attached.
+    // Recording requires this so the local user's voice is included.
+    var isCapturingMicrophone: Bool { get }
     func startCapture() async throws
     func stopCapture() async
 }

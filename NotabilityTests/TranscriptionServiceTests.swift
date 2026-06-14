@@ -4,32 +4,30 @@ import XCTest
 final class TranscriptionServiceTests: XCTestCase {
     private let keychainKey = "com.notability.openai-api-key"
     private var sandbox: CredentialStoreSandbox!
+    private var defaultsSuiteNames: [String] = []
 
     override func setUp() async throws {
         sandbox = CredentialStoreSandbox()
         CredentialsStore.save("sk-test", forKey: keychainKey)
-        ModelSettings.shared.transcriptionProvider = .audioAPI
-        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
-        ModelSettings.shared.transcriptionLanguage = "ko"
     }
 
     override func tearDown() async throws {
         CredentialsStore.delete(forKey: keychainKey)
         sandbox.tearDown()
         sandbox = nil
-        ModelSettings.shared.transcriptionProvider = .audioAPI
-        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
-        ModelSettings.shared.transcriptionLanguage = "ko"
+        for suiteName in defaultsSuiteNames {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        }
+        defaultsSuiteNames = []
     }
 
-    func test_transcribe_returns_chunk_on_success() async throws {
+    func test_gpt4o_transcribe_method_uses_audio_api_request() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe, language: "ko")
         let mockResponse = "Hello, this is a test transcription."
         let client = MockHTTPClient(responseData: mockResponse.data(using: .utf8)!, statusCode: 200)
-        let sut = TranscriptionService(httpClient: client)
+        let sut = TranscriptionService(httpClient: client, settings: settings)
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
-        // service deletes the file on success — defer handles unexpected early exit
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 60.0)
@@ -38,14 +36,15 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(chunk.timestamp, 60.0)
         XCTAssertEqual(client.requests.first?.url?.absoluteString, "https://api.openai.com/v1/audio/transcriptions")
         XCTAssertEqual(client.requests.count, 1)
+        XCTAssertMultipartBody(client.requests.first?.httpBody, contains: "name=\"model\"\r\n\r\ngpt-4o-transcribe")
     }
 
     func test_transcribe_throws_on_api_error() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe)
         let client = MockHTTPClient(responseData: Data(), statusCode: 401)
-        let sut = TranscriptionService(httpClient: client)
+        let sut = TranscriptionService(httpClient: client, settings: settings)
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         do {
@@ -56,40 +55,63 @@ final class TranscriptionServiceTests: XCTestCase {
         }
     }
 
-    func test_realtime_provider_routes_to_realtime_transcriber() async throws {
-        ModelSettings.shared.transcriptionProvider = .realtimeAPI
-        ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
-        ModelSettings.shared.transcriptionLanguage = "en"
+    func test_realtime_whisper_method_routes_only_to_realtime_engine() async throws {
+        let settings = try makeSettings(method: .realtimeWhisper, language: "en")
+        let audioEngine = MockTranscriptionEngine(text: "wrong engine")
+        let realtimeEngine = MockTranscriptionEngine(text: "Realtime transcript")
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: realtimeEngine,
+            settings: settings
+        )
 
-        let audioAPI = MockTranscriber(text: "wrong provider")
-        let realtimeAPI = MockTranscriber(text: "Realtime transcript")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 12, prompt: "previous words")
 
         XCTAssertEqual(chunk.text, "Realtime transcript")
-        XCTAssertEqual(audioAPI.calls.count, 0)
-        XCTAssertEqual(realtimeAPI.calls.count, 1)
-        XCTAssertEqual(realtimeAPI.calls.first?.model, "gpt-realtime-whisper")
-        XCTAssertEqual(realtimeAPI.calls.first?.language, "en")
-        XCTAssertEqual(realtimeAPI.calls.first?.prompt, "previous words")
+        XCTAssertEqual(audioEngine.calls.count, 0)
+        XCTAssertEqual(realtimeEngine.calls.count, 1)
+        XCTAssertEqual(realtimeEngine.calls.first?.model, "gpt-realtime-whisper")
+        XCTAssertEqual(realtimeEngine.calls.first?.language, "en")
+        XCTAssertEqual(realtimeEngine.calls.first?.prompt, "previous words")
     }
 
-    func test_realtime_provider_forwards_partial_transcripts() async throws {
-        ModelSettings.shared.transcriptionProvider = .realtimeAPI
-        ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
+    func test_gpt4o_transcribe_method_routes_only_to_audio_engine() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe, language: "ko")
+        let audioEngine = MockTranscriptionEngine(text: "GPT-4o transcript")
+        let realtimeEngine = MockTranscriptionEngine(text: "wrong engine")
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: realtimeEngine,
+            settings: settings
+        )
 
-        let audioAPI = MockTranscriber(text: "wrong provider")
-        let realtimeAPI = MockTranscriber(text: "Realtime transcript")
-        realtimeAPI.partials = ["실시간", "실시간 자막"]
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
+        let tempFile = try makeTempWAV()
+        defer { try? FileManager.default.removeItem(at: tempFile) }
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 3)
+
+        XCTAssertEqual(chunk.text, "GPT-4o transcript")
+        XCTAssertEqual(audioEngine.calls.count, 1)
+        XCTAssertEqual(realtimeEngine.calls.count, 0)
+        XCTAssertEqual(audioEngine.calls.first?.model, "gpt-4o-transcribe")
+        XCTAssertEqual(audioEngine.calls.first?.language, "ko")
+    }
+
+    func test_realtime_whisper_method_forwards_partial_transcripts() async throws {
+        let settings = try makeSettings(method: .realtimeWhisper)
+        let audioEngine = MockTranscriptionEngine(text: "wrong engine")
+        let realtimeEngine = MockTranscriptionEngine(text: "Realtime transcript")
+        realtimeEngine.partials = ["실시간", "실시간 자막"]
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: realtimeEngine,
+            settings: settings
+        )
+
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         var partials: [String] = []
@@ -103,124 +125,92 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(partials, ["실시간", "실시간 자막"])
     }
 
-    func test_language_hint_prompt_injected_when_language_is_ko() async throws {
-        ModelSettings.shared.transcriptionModel = "whisper-1"
-        ModelSettings.shared.transcriptionLanguage = "ko"
+    func test_language_hint_prompt_is_not_injected_for_gpt4o_transcribe() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe, language: "ko")
+        let audioEngine = MockTranscriptionEngine(text: "결과")
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: MockTranscriptionEngine(text: "unused"),
+            settings: settings
+        )
 
-        let audioAPI = MockTranscriber(text: "안녕하세요")
-        let realtimeAPI = MockTranscriber(text: "unused")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
 
-        XCTAssertEqual(audioAPI.calls.first?.prompt, "다음은 한국어 회의 내용입니다.")
+        XCTAssertNil(audioEngine.calls.first?.prompt)
     }
 
-    func test_explicit_prompt_overrides_language_hint() async throws {
-        ModelSettings.shared.transcriptionModel = "whisper-1"
-        ModelSettings.shared.transcriptionLanguage = "ko"
+    func test_explicit_prompt_echo_is_discarded() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe, language: "ko")
+        let audioEngine = MockTranscriptionEngine(text: "회의 용어")
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: MockTranscriptionEngine(text: "unused"),
+            settings: settings
+        )
 
-        let audioAPI = MockTranscriber(text: "결과")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
-        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0, prompt: "회의 용어")
-
-        XCTAssertEqual(audioAPI.calls.first?.prompt, "회의 용어")
-    }
-
-    func test_language_hint_injected_for_gpt4o_transcribe() async throws {
-        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
-        ModelSettings.shared.transcriptionLanguage = "ko"
-
-        let audioAPI = MockTranscriber(text: "결과")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
-        defer { try? FileManager.default.removeItem(at: tempFile) }
-
-        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
-
-        XCTAssertEqual(audioAPI.calls.first?.prompt, "다음은 한국어 회의 내용입니다.")
-    }
-
-    func test_no_language_hint_for_diarize_model() async throws {
-        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe-diarize"
-        ModelSettings.shared.transcriptionLanguage = "ko"
-
-        let audioAPI = MockTranscriber(text: "결과")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
-        defer { try? FileManager.default.removeItem(at: tempFile) }
-
-        _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
-
-        XCTAssertNil(audioAPI.calls.first?.prompt)
-    }
-
-    func test_prompt_echo_is_discarded() async throws {
-        ModelSettings.shared.transcriptionModel = "gpt-4o-transcribe"
-        ModelSettings.shared.transcriptionLanguage = "ko"
-
-        // Simulate gpt-4o-transcribe echoing the language hint on a silent clip
-        let audioAPI = MockTranscriber(text: "다음은 한국어 회의 내용입니다.")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
-        defer { try? FileManager.default.removeItem(at: tempFile) }
-
-        let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
+        let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 0, prompt: "회의 용어")
 
         XCTAssertEqual(chunk.text, "")
     }
 
-    func test_no_language_hint_when_language_is_not_set() async throws {
-        ModelSettings.shared.transcriptionLanguage = ""
+    func test_no_language_when_language_is_not_set() async throws {
+        let settings = try makeSettings(method: .gpt4oTranscribe, language: "")
+        let audioEngine = MockTranscriptionEngine(text: "result")
+        let sut = TranscriptionService(
+            audioAPITranscriptionEngine: audioEngine,
+            realtimeWhisperTranscriptionEngine: MockTranscriptionEngine(text: "unused"),
+            settings: settings
+        )
 
-        let audioAPI = MockTranscriber(text: "result")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: MockTranscriber(text: "unused"))
-
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
-        try Data().write(to: tempFile)
+        let tempFile = try makeTempWAV()
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         _ = try await sut.transcribe(audioURL: tempFile, timestamp: 0)
 
-        XCTAssertNil(audioAPI.calls.first?.prompt)
+        XCTAssertNil(audioEngine.calls.first?.language)
     }
 
-    func test_realtime_model_routes_to_realtime_transcriber_even_when_provider_is_audio_api() async throws {
-        ModelSettings.shared.transcriptionProvider = .audioAPI
-        ModelSettings.shared.transcriptionModel = "gpt-realtime-whisper"
+    private func makeSettings(
+        method: ModelSettings.TranscriptionMethod,
+        language: String = "ko"
+    ) throws -> ModelSettings {
+        let suiteName = "TranscriptionServiceTests.\(UUID().uuidString)"
+        defaultsSuiteNames.append(suiteName)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        let settings = ModelSettings(userDefaults: defaults)
+        settings.transcriptionMethod = method
+        settings.transcriptionLanguage = language
+        return settings
+    }
 
-        let audioAPI = MockTranscriber(text: "wrong provider")
-        let realtimeAPI = MockTranscriber(text: "Realtime transcript")
-        let sut = TranscriptionService(audioAPITranscriber: audioAPI, realtimeAPITranscriber: realtimeAPI)
-
+    private func makeTempWAV() throws -> URL {
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try Data().write(to: tempFile)
-        defer { try? FileManager.default.removeItem(at: tempFile) }
+        return tempFile
+    }
 
-        let chunk = try await sut.transcribe(audioURL: tempFile, timestamp: 3)
-
-        XCTAssertEqual(chunk.text, "Realtime transcript")
-        XCTAssertEqual(audioAPI.calls.count, 0)
-        XCTAssertEqual(realtimeAPI.calls.count, 1)
+    private func XCTAssertMultipartBody(
+        _ data: Data?,
+        contains expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let data, let body = String(data: data, encoding: .utf8) else {
+            XCTFail("Missing multipart body", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(body.contains(expected), "Multipart body did not contain \(expected): \(body)", file: file, line: line)
     }
 }
 
-private final class MockTranscriber: OpenAITranscriber {
+private final class MockTranscriptionEngine: TranscriptionEngine {
     struct Call {
         let audioURL: URL
         let apiKey: String

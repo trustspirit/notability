@@ -35,4 +35,43 @@ final class ModelTests: XCTestCase {
         XCTAssertNil(decoded.notes)
         XCTAssertEqual(decoded.notesGenerationError, "API error")
     }
+
+    func test_transcription_methods_expose_only_realtime_whisper_and_gpt4o_transcribe() {
+        XCTAssertEqual(
+            ModelSettings.TranscriptionMethod.allCases.map(\.model),
+            ["gpt-realtime-whisper", "gpt-4o-transcribe"]
+        )
+    }
+
+    func test_legacy_whisper_saved_setting_migrates_to_gpt4o_transcribe_method() throws {
+        let defaults = try makeIsolatedUserDefaults()
+        defaults.set("audioAPI", forKey: "transcriptionProvider")
+        defaults.set("whisper-1", forKey: "transcriptionModel")
+
+        let settings = ModelSettings(userDefaults: defaults)
+
+        XCTAssertEqual(settings.transcriptionMethod, .gpt4oTranscribe)
+        XCTAssertEqual(settings.transcriptionModel, "gpt-4o-transcribe")
+    }
+
+    func test_saved_realtime_model_migrates_to_realtime_whisper_method() throws {
+        let defaults = try makeIsolatedUserDefaults()
+        defaults.set("audioAPI", forKey: "transcriptionProvider")
+        defaults.set("gpt-realtime-whisper", forKey: "transcriptionModel")
+
+        let settings = ModelSettings(userDefaults: defaults)
+
+        XCTAssertEqual(settings.transcriptionMethod, .realtimeWhisper)
+        XCTAssertEqual(settings.transcriptionModel, "gpt-realtime-whisper")
+    }
+
+    private func makeIsolatedUserDefaults() throws -> UserDefaults {
+        let suiteName = "ModelTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        return defaults
+    }
 }

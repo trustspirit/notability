@@ -104,9 +104,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: Spacing.xs) {
                         Text("Transcription method")
                             .font(.callout.weight(.medium))
-                        Picker("", selection: $modelSettings.transcriptionProvider) {
-                            ForEach(ModelSettings.TranscriptionProvider.allCases) { provider in
-                                Text(provider.displayName).tag(provider)
+                        Picker("", selection: $modelSettings.transcriptionMethod) {
+                            ForEach(ModelSettings.TranscriptionMethod.allCases) { method in
+                                Text(method.displayName).tag(method)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -116,10 +116,9 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    ModelField(
+                    ReadOnlyModelField(
                         label: "Transcription model",
-                        value: $modelSettings.transcriptionModel,
-                        presets: modelSettings.transcriptionProvider.models
+                        value: modelSettings.transcriptionModel
                     )
                     ModelField(
                         label: "Note generation model",
@@ -194,11 +193,28 @@ struct SettingsView: View {
     }
 
     private var transcriptionMethodDescription: String {
-        switch modelSettings.transcriptionProvider {
-        case .audioAPI:
-            return "Audio API uses the existing request/response transcription flow for recorded chunks."
-        case .realtimeAPI:
-            return "Realtime API streams each captured chunk through gpt-realtime-whisper."
+        modelSettings.transcriptionMethod.description
+    }
+}
+
+private struct ReadOnlyModelField: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(label)
+                .font(.callout.weight(.medium))
+            Text(value)
+                .font(.system(size: 13, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(BrandColor.surfaceElevated, in: RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                        .strokeBorder(BrandColor.border, lineWidth: 0.5)
+                )
         }
     }
 }

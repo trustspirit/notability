@@ -22,28 +22,34 @@ final class TranscriptionService: TranscriptionServiceProtocol {
                 return "Received an unexpected response from OpenAI."
             }
         }
+
+        var isInvalidAudioFile: Bool {
+            guard case .httpError(400, let detail) = self else { return false }
+            let normalized = detail?.lowercased() ?? ""
+            return normalized.contains("corrupted") || normalized.contains("unsupported")
+        }
     }
 
-    private let audioAPITranscriber: any OpenAITranscriber
-    private let realtimeAPITranscriber: any OpenAITranscriber
+    private let audioAPITranscriptionEngine: any TranscriptionEngine
+    private let realtimeWhisperTranscriptionEngine: any TranscriptionEngine
     private let settings: ModelSettings
 
     init(
         httpClient: HTTPClient = URLSession.shared,
         settings: ModelSettings = .shared
     ) {
-        self.audioAPITranscriber = AudioAPITranscriber(httpClient: httpClient)
-        self.realtimeAPITranscriber = RealtimeAPITranscriber()
+        self.audioAPITranscriptionEngine = AudioAPITranscriptionEngine(httpClient: httpClient)
+        self.realtimeWhisperTranscriptionEngine = RealtimeWhisperTranscriptionEngine()
         self.settings = settings
     }
 
     init(
-        audioAPITranscriber: any OpenAITranscriber,
-        realtimeAPITranscriber: any OpenAITranscriber,
+        audioAPITranscriptionEngine: any TranscriptionEngine,
+        realtimeWhisperTranscriptionEngine: any TranscriptionEngine,
         settings: ModelSettings = .shared
     ) {
-        self.audioAPITranscriber = audioAPITranscriber
-        self.realtimeAPITranscriber = realtimeAPITranscriber
+        self.audioAPITranscriptionEngine = audioAPITranscriptionEngine
+        self.realtimeWhisperTranscriptionEngine = realtimeWhisperTranscriptionEngine
         self.settings = settings
     }
 
@@ -57,50 +63,36 @@ final class TranscriptionService: TranscriptionServiceProtocol {
             throw APIError.missingAPIKey
         }
 
-        let model = settings.transcriptionModel
+        let method = settings.transcriptionMethod
+        let model = method.model
         let language = settings.transcriptionLanguage.isEmpty ? nil : settings.transcriptionLanguage
-        // Static language-anchor prompt: unlike rolling-transcript prompts (which
-        // gpt-4o-transcribe echoes verbatim), a short non-content phrase just sets the
-        // language register and doesn't risk duplicating meeting content.
-        let effectivePrompt = prompt ?? Self.staticLanguageHint(model: model, language: language)
-        let transcriber = selectedTranscriber(for: model)
-        let text = try await transcriber.transcribe(
+        let engine = selectedEngine(for: method)
+        let text = try await engine.transcribe(
             audioURL: audioURL,
             apiKey: apiKey,
             model: model,
             language: language,
-            prompt: effectivePrompt,
+            prompt: prompt,
             onPartialTranscript: onPartialTranscript
         )
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // gpt-4o-transcribe echoes the prompt on silent/short clips — treat it as empty.
-        if let hint = effectivePrompt, trimmed == hint { return TranscriptChunk(timestamp: timestamp, text: "") }
+        // Transcription models can echo prompts on silent/short clips — treat that as empty.
+        if let prompt, trimmed == prompt { return TranscriptChunk(timestamp: timestamp, text: "") }
         return TranscriptChunk(timestamp: timestamp, text: trimmed)
     }
 
-    // Models confirmed to NOT support the prompt parameter (per OpenAI docs).
-    private static let modelsWithoutPromptSupport: Set<String> = ["gpt-4o-transcribe-diarize"]
-
-    private static func staticLanguageHint(model: String, language: String?) -> String? {
-        guard !modelsWithoutPromptSupport.contains(model), let language else { return nil }
-        switch language {
-        case "ko": return "다음은 한국어 회의 내용입니다."
-        case "ja": return "以下は日本語の会議内容です。"
-        case "zh": return "以下是中文会议内容。"
-        default:   return nil
+    private func selectedEngine(for method: ModelSettings.TranscriptionMethod) -> any TranscriptionEngine {
+        switch method {
+        case .realtimeWhisper:
+            return realtimeWhisperTranscriptionEngine
+        case .gpt4oTranscribe:
+            return audioAPITranscriptionEngine
         }
-    }
-
-    private func selectedTranscriber(for model: String) -> any OpenAITranscriber {
-        if settings.transcriptionProvider == .realtimeAPI || ModelSettings.realtimeTranscriptionModels.contains(model) {
-            return realtimeAPITranscriber
-        }
-        return audioAPITranscriber
     }
 }
 
-protocol OpenAITranscriber {
+protocol TranscriptionEngine {
     func transcribe(
         audioURL: URL,
         apiKey: String,
@@ -111,7 +103,7 @@ protocol OpenAITranscriber {
     ) async throws -> String
 }
 
-final class AudioAPITranscriber: OpenAITranscriber {
+final class AudioAPITranscriptionEngine: TranscriptionEngine {
     private let httpClient: HTTPClient
 
     init(httpClient: HTTPClient = URLSession.shared) {
@@ -183,7 +175,7 @@ final class AudioAPITranscriber: OpenAITranscriber {
     }
 }
 
-final class RealtimeAPITranscriber: OpenAITranscriber {
+final class RealtimeWhisperTranscriptionEngine: TranscriptionEngine {
     private let session: URLSession
     private let inputSampleRate = 24_000
     private let sendChunkByteCount = 24_000

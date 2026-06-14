@@ -304,6 +304,26 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(sut.pendingTranscriptionCount, 0)
     }
 
+    func test_transcription_backpressure_limits_active_work_for_burst() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.delayNanoseconds = 500_000_000
+        try await sut.startRecording()
+        await Task.yield()
+
+        for index in 0..<10 {
+            try emitTempChunk(capture, timestamp: TimeInterval(index))
+        }
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(transcription.startedCount, 4)
+        XCTAssertEqual(sut.pendingTranscriptionCount, 4)
+
+        await sut.stopRecording()
+
+        XCTAssertEqual(transcription.startedCount, 10)
+    }
+
     func test_repeated_filler_transcript_is_dropped() async throws {
         let (sut, capture, transcription, _) = makeSUT()
         transcription.text = "아. 아. 아. 아."
@@ -334,6 +354,51 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(sut.liveTranscript.first?.text, "[transcription failed: Realtime rejected the session]")
     }
 
+    func test_corrupted_audio_400_is_dropped_from_live_transcript() async throws {
+        let (sut, capture, transcription, _) = makeSUT()
+        transcription.error = TranscriptionService.APIError.httpError(
+            400,
+            "Audio file might be corrupted or unsupported. Check the selected model and language settings."
+        )
+        try await sut.startRecording()
+        await Task.yield()
+
+        let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try Data().write(to: tempWAV)
+        capture.emit((url: tempWAV, timestamp: 0))
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(sut.liveTranscript.isEmpty)
+    }
+
+    func test_start_recording_fails_when_microphone_is_not_capturing() async throws {
+        let (sut, capture, _, store) = makeSUT()
+        capture.isCapturingSystemAudio = true
+        capture.isCapturingMicrophone = false
+
+        do {
+            try await sut.startRecording()
+            XCTFail("Expected recording to fail without microphone capture")
+        } catch {
+            XCTAssertTrue(store.allMeetings.isEmpty)
+        }
+    }
+
+    func test_system_audio_availability_updates_while_recording() async throws {
+        let (sut, capture, _, _) = makeSUT()
+        try await sut.startRecording()
+
+        XCTAssertTrue(sut.systemAudioAvailable)
+
+        capture.isCapturingSystemAudio = false
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(sut.systemAudioAvailable)
+
+        await sut.stopRecording()
+    }
+
     // MARK: - Helpers
 
     private func makeSUT() -> (RecordingCoordinator, MockAudioCaptureService, MockTranscriptionService, MeetingStore) {
@@ -354,13 +419,41 @@ final class RecordingCoordinatorTests: XCTestCase {
     }
 }
 
+final class AudioCaptureServiceTests: XCTestCase {
+    private var cancellables = Set<AnyCancellable>()
+
+    func test_systemAudioStopDoesNotCompleteChunkPublisher() async {
+        let sut = AudioCaptureService()
+        let completed = expectation(description: "chunk publisher should remain open")
+        completed.isInverted = true
+
+        sut.chunkPublisher
+            .sink(
+                receiveCompletion: { _ in completed.fulfill() },
+                receiveValue: { _ in }
+            )
+            .store(in: &cancellables)
+
+        sut.handleSystemAudioCaptureStopped()
+
+        await fulfillment(of: [completed], timeout: 0.1)
+    }
+}
+
 // MARK: - Mocks
 
 final class MockAudioCaptureService: AudioCaptureServiceProtocol {
     private let subject = PassthroughSubject<AudioChunk, Never>()
+    private let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(true)
     var chunkPublisher: AnyPublisher<AudioChunk, Never> { subject.eraseToAnyPublisher() }
     var audioLevelPublisher: AnyPublisher<Float, Never> { Empty().eraseToAnyPublisher() }
-    var isCapturingSystemAudio = true
+    var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
+        systemAudioAvailabilitySubject.eraseToAnyPublisher()
+    }
+    var isCapturingSystemAudio = true {
+        didSet { systemAudioAvailabilitySubject.send(isCapturingSystemAudio) }
+    }
+    var isCapturingMicrophone = true
     var startCalled = false
     var stopCalled = false
 
@@ -378,6 +471,7 @@ final class MockTranscriptionService: TranscriptionServiceProtocol {
     var error: Error?
     var partials: [String] = []
     var delayNanoseconds: UInt64 = 0
+    private(set) var startedCount = 0
     private(set) var receivedPrompts: [String?] = []
 
     func transcribe(
@@ -386,6 +480,7 @@ final class MockTranscriptionService: TranscriptionServiceProtocol {
         prompt: String?,
         onPartialTranscript: TranscriptionPartialHandler?
     ) async throws -> TranscriptChunk {
+        startedCount += 1
         receivedPrompts.append(prompt)
         if let error { throw error }
         for partial in partials {

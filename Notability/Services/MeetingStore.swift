@@ -13,6 +13,10 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     // overwrite a newer save). save() blocks on this queue; persistTranscriptSnapshot
     // dispatches async.
     private let diskWriteQueue = DispatchQueue(label: "com.notability.MeetingStore.disk", qos: .utility)
+    private var pendingTranscriptSnapshots: [UUID: Meeting] = [:]
+    private var transcriptSnapshotFlushScheduled = false
+    private var lastTranscriptSnapshotFlush = Date.distantPast
+    private let transcriptSnapshotMinimumWriteInterval: TimeInterval = 1.0
 
     init(storageDirectory: URL = MeetingStore.defaultDirectory) {
         self.storageDirectory = storageDirectory
@@ -60,12 +64,8 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         // Going through diskWriteQueue keeps write order consistent with any
         // background snapshot writes already enqueued for the same file.
         diskWriteQueue.sync {
-            do {
-                let data = try JSONEncoder().encode(meeting)
-                try data.write(to: fileURL, options: .atomic)
-            } catch {
-                print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
-            }
+            pendingTranscriptSnapshots.removeValue(forKey: meeting.id)
+            writeMeetingToDisk(meeting, fileURL: fileURL, logFailures: true)
         }
     }
 
@@ -76,15 +76,10 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         allMeetings[idx].transcript = transcript
         allMeetings[idx].durationSeconds = durationSeconds
         let snapshot = allMeetings[idx]
-        let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
-        // Errors are intentionally silenced: this runs on every chunk during a
-        // recording, so a transient write failure would spam logs. The next
-        // chunk's snapshot supersedes this one anyway, so a missed write is
-        // self-healing within seconds.
-        diskWriteQueue.async {
-            if let data = try? JSONEncoder().encode(snapshot) {
-                try? data.write(to: fileURL, options: .atomic)
-            }
+        diskWriteQueue.async { [weak self] in
+            guard let self else { return }
+            self.pendingTranscriptSnapshots[id] = snapshot
+            self.scheduleTranscriptSnapshotFlushOnDiskQueue()
         }
     }
 
@@ -108,8 +103,51 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
 
     func delete(id: UUID) {
         let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
-        try? FileManager.default.removeItem(at: fileURL)
+        diskWriteQueue.sync {
+            pendingTranscriptSnapshots.removeValue(forKey: id)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
         allMeetings.removeAll { $0.id == id }
+    }
+
+    private func scheduleTranscriptSnapshotFlushOnDiskQueue() {
+        guard !transcriptSnapshotFlushScheduled else { return }
+        transcriptSnapshotFlushScheduled = true
+
+        let elapsed = Date().timeIntervalSince(lastTranscriptSnapshotFlush)
+        let delay = max(0, transcriptSnapshotMinimumWriteInterval - elapsed)
+        diskWriteQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.flushPendingTranscriptSnapshotsOnDiskQueue()
+        }
+    }
+
+    private func flushPendingTranscriptSnapshotsOnDiskQueue() {
+        transcriptSnapshotFlushScheduled = false
+        guard !pendingTranscriptSnapshots.isEmpty else { return }
+
+        let snapshots = pendingTranscriptSnapshots
+        pendingTranscriptSnapshots = [:]
+        lastTranscriptSnapshotFlush = Date()
+
+        for (id, snapshot) in snapshots {
+            let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
+            writeMeetingToDisk(snapshot, fileURL: fileURL, logFailures: false)
+        }
+
+        if !pendingTranscriptSnapshots.isEmpty {
+            scheduleTranscriptSnapshotFlushOnDiskQueue()
+        }
+    }
+
+    private func writeMeetingToDisk(_ meeting: Meeting, fileURL: URL, logFailures: Bool) {
+        do {
+            let data = try JSONEncoder().encode(meeting)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            if logFailures {
+                print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
+            }
+        }
     }
 
     private func loadAll() {
