@@ -16,7 +16,7 @@ struct MainWindowView: View {
             } else if let id = selectedMeetingId, let meeting = store.fetch(id: id) {
                 MeetingDetailView(meeting: meeting)
                     .id(meeting.id)  // force fresh @State (selectedTab, titleInput) per meeting
-            } else if case .processing = coordinator.state {
+            } else if case .transcribing = coordinator.state {
                 BrandedEmptyState(
                     title: "Generating notes…",
                     systemImage: "sparkles",
@@ -38,7 +38,7 @@ struct MainWindowView: View {
             switch newState {
             case .done(let id):
                 selectedMeetingId = id
-            case .processing:
+            case .transcribing:
                 // currentMeetingId is still set here (defer in stopRecording fires after this)
                 selectedMeetingId = coordinator.currentMeetingId
             default:

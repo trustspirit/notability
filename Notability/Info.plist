@@ -19,5 +19,7 @@
     <string>Notability captures system audio to transcribe your meetings.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Notability captures your microphone so your voice is included in the transcript.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Notability transcribes your meetings on-device so live captions can appear while you record.</string>
 </dict>
 </plist>

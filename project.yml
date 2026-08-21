@@ -2,8 +2,8 @@ name: Notability
 options:
   bundleIdPrefix: com.notability
   deploymentTarget:
-    macOS: "14.0"
-  xcodeVersion: "15.0"
+    macOS: "26.0"
+  xcodeVersion: "26.0"
   minimumXcodeGenVersion: "2.38.0"
 
 packages:
@@ -14,7 +14,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
 
@@ -35,6 +35,7 @@ targets:
     dependencies:
       - sdk: ScreenCaptureKit.framework
       - sdk: AVFoundation.framework
+      - sdk: Speech.framework
       - package: Sparkle
         product: Sparkle
 

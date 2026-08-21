@@ -198,7 +198,7 @@ final class RecordingCoordinator: ObservableObject {
         meeting.transcript = liveTranscript
         store.save(meeting)
 
-        state = .processing
+        state = .transcribing
 
         do {
             let validTranscript = liveTranscript.filter { !Self.isTranscriptionFailure($0.text) }

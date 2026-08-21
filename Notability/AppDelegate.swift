@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let mins = Int(elapsed) / 60
             let secs = Int(elapsed) % 60
             title = " \(String(format: "%d:%02d", mins, secs))"
-        case .processing:
+        case .transcribing, .generatingNotes:
             icon = statusIcons["hourglass"]; isTemplate = true; tint = nil; title = ""
         case .done:
             icon = statusIcons["mic"]; isTemplate = true; tint = nil; title = ""
@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showIdleMenu()
         case .recording:
             showRecordingMenu()
-        case .processing:
+        case .transcribing, .generatingNotes:
             break
         case .done, .failed:
             openMainWindow()

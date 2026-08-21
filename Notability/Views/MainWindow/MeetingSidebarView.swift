@@ -143,7 +143,7 @@ struct MeetingSidebarView: View {
                 PrimaryActionButton(title: "Stop Recording", systemImage: "stop.fill", tint: BrandColor.recording) {
                     Task { await coordinator.stopRecording() }
                 }
-            case .processing:
+            case .transcribing, .generatingNotes:
                 HStack(spacing: Spacing.sm) {
                     ProgressView().controlSize(.small)
                     Text("Generating notes…")

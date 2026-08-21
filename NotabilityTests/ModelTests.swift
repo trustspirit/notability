@@ -75,3 +75,35 @@ final class ModelTests: XCTestCase {
         return defaults
     }
 }
+
+final class ModelMigrationTests: XCTestCase {
+    func test_transcriptChunk_decodes_legacy_json_without_speaker() throws {
+        let legacy = Data(#"{"timestamp":12.5,"text":"안녕하세요"}"#.utf8)
+        let chunk = try JSONDecoder().decode(TranscriptChunk.self, from: legacy)
+        XCTAssertEqual(chunk.timestamp, 12.5)
+        XCTAssertEqual(chunk.text, "안녕하세요")
+        XCTAssertNil(chunk.speaker)
+    }
+
+    func test_transcriptChunk_roundtrips_with_speaker() throws {
+        let original = TranscriptChunk(timestamp: 3, text: "네", speaker: "나")
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(TranscriptChunk.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func test_meeting_decodes_legacy_json_without_new_fields() throws {
+        let legacy = Data("""
+        {"id":"1B4E28BA-2FA1-11D2-883F-0016D3CCA427","title":"Old meeting",
+         "date":0,"durationSeconds":60,"transcript":[],"notes":null,
+         "notesGenerationError":null}
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .deferredToDate
+        let meeting = try decoder.decode(Meeting.self, from: legacy)
+        XCTAssertEqual(meeting.title, "Old meeting")
+        XCTAssertNil(meeting.audioDirectory)
+        XCTAssertNil(meeting.transcriptionError)
+        XCTAssertNil(meeting.billedSeconds)
+    }
+}
