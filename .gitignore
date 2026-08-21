@@ -7,3 +7,5 @@ build/
 .sparkle-tools/
 sparkle.tar.xz
 docs/superpowers/plans/
+docs/superpowers/specs/
+.superpowers/
