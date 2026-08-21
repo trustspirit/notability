@@ -8,20 +8,33 @@ import Speech
 /// diarized pass after recording stops, so a caption stall or a missing model
 /// never degrades the meeting notes — every failure here is reported and
 /// swallowed rather than propagated.
+///
+/// Isolated to the main actor because the protocol's "one serialized context"
+/// requirement has to be enforced somewhere. An `async` method on a plain class
+/// runs on the cooperative pool and does not inherit its caller's actor, so a
+/// `finish()` launched while a slow `prepare` is still downloading assets would
+/// otherwise mutate the same dictionaries from a second thread. `append` opts
+/// back out: it comes from realtime audio threads and reaches only `registry`,
+/// which carries its own lock.
+@MainActor
 final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
-    let events: AsyncStream<LiveTranscriptionEvent>
-    private let continuation: AsyncStream<LiveTranscriptionEvent>.Continuation
+    nonisolated let events: AsyncStream<LiveTranscriptionEvent>
+    private nonisolated let continuation: AsyncStream<LiveTranscriptionEvent>.Continuation
 
-    /// The only state `append` reads, and the only state that needs a lock.
-    private let registry = AnalyzerInputRegistry()
+    /// The only state `append` reaches, and the only state that needs a lock.
+    private nonisolated let registry = AnalyzerInputRegistry()
 
-    // Reached from prepare/finish only, which the protocol requires callers to
-    // serialize, so these need no synchronization of their own.
+    // Main-actor state. The serial executor is what makes the `didFinish`
+    // guards below sufficient rather than hopeful: a concurrent `finish()` can
+    // only overtake an in-flight `prepare` at one of `prepare`'s own awaits,
+    // never part-way through one of these mutations.
     private var analyzers: [AudioSource: SpeechAnalyzer] = [:]
     private var readers: [AudioSource: Task<Void, Never>] = [:]
     private var didFinish = false
 
-    init() {
+    /// Nonisolated so a caller on any context can own the instance before it
+    /// has an actor to hop to; nothing here touches isolated state.
+    nonisolated init() {
         var escaped: AsyncStream<LiveTranscriptionEvent>.Continuation!
         // Captions are worth bounding: volatile results arrive several times a
         // second per source, and an unbounded stream behind a slow consumer
@@ -34,11 +47,11 @@ final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
     /// The locale a transcriber can actually run, which may differ in region
     /// from the one asked for. Reflects framework support, not whether the model
     /// has been downloaded — installation is `prepare`'s job.
-    static func supportedLocale(equivalentTo locale: Locale) async -> Locale? {
+    nonisolated static func supportedLocale(equivalentTo locale: Locale) async -> Locale? {
         await SpeechTranscriber.supportedLocale(equivalentTo: locale)
     }
 
-    static func isSupported(locale: Locale) async -> Bool {
+    nonisolated static func isSupported(locale: Locale) async -> Bool {
         await supportedLocale(equivalentTo: locale) != nil
     }
 
@@ -89,12 +102,17 @@ final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let (inputSequence, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
         // Started before the analyzer so no early result can be missed, which
-        // means a failed handshake has to tear it back down explicitly.
+        // leaves a failed handshake to tear it back down.
         let reader = resultReader(for: source, of: transcriber)
         do {
             try await analyzer.start(inputSequence: inputSequence)
         } catch {
             inputContinuation.finish()
+            // The analyzer never ran, so there is nothing to finalize and no
+            // result will ever arrive. Cancellation is the only handle left;
+            // whether `transcriber.results` observes it is undocumented, so
+            // this may leave one parked task per failed source rather than
+            // reclaiming it.
             reader.cancel()
             throw error
         }
@@ -140,7 +158,12 @@ final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
         try await request.downloadAndInstall()
     }
 
-    private func resultReader(
+    /// Nonisolated so the task it spawns does not inherit the main actor. This
+    /// loop lives as long as the recording and wakes on every volatile result,
+    /// several times a second per source; scheduling that on the actor that
+    /// drives the UI buys nothing, since the only state it touches is the
+    /// continuation, which is thread-safe.
+    private nonisolated func resultReader(
         for source: AudioSource,
         of transcriber: SpeechTranscriber
     ) -> Task<Void, Never> {
@@ -168,7 +191,7 @@ final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
         }
     }
 
-    func append(_ buffer: TaggedAudioBuffer) {
+    nonisolated func append(_ buffer: TaggedAudioBuffer) {
         registry.sink(for: buffer.source)?.send(buffer)
     }
 

@@ -48,13 +48,27 @@ enum LiveTranscriptionEvent: Equatable {
 /// use: `events` terminates on `finish()` and `prepare` must not be called
 /// again afterwards, so a new recording needs a new instance.
 ///
-/// `prepare` and `finish` must be called from one serialized context. `append`
-/// is free-threaded by design — it is driven from realtime audio callbacks and
-/// must never be wrapped in a task, because that would reorder buffers.
+/// `prepare` and `finish` need one serialized context, because they hand state
+/// to each other across suspension points; the main actor is that context, and
+/// the isolation here is what enforces it rather than a convention callers have
+/// to remember.
+///
+/// `append` opts back out: it is driven from realtime audio callbacks, so it
+/// stays synchronous and free-threaded. That freedom carries two ordering
+/// obligations, because a source whose buffers reach the analyzer out of order
+/// is rejected as disordered audio and loses captions for the rest of the
+/// recording:
+///
+/// - Never wrap `append` in a task. Call it synchronously from the callback.
+/// - At most one thread may append for a given source at a time. Different
+///   sources are independent and may append concurrently. An implementation can
+///   lock its own internals, but no lock can recover an order the caller has
+///   already lost, so this obligation cannot be delegated to one.
+@MainActor
 protocol LiveTranscriptionServiceProtocol: AnyObject {
-    var events: AsyncStream<LiveTranscriptionEvent> { get }
+    nonisolated var events: AsyncStream<LiveTranscriptionEvent> { get }
     func prepare(sources: [AudioSource], locale: Locale) async
-    func append(_ buffer: TaggedAudioBuffer)
+    nonisolated func append(_ buffer: TaggedAudioBuffer)
     func finish() async
 }
 

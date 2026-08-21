@@ -5,9 +5,14 @@ import os
 /// One capture source's path from the audio thread into its `SpeechAnalyzer`.
 ///
 /// Built while `prepare` runs and then only read, so an audio callback can use
-/// it without going back through the registry that owns it. The lock guards the
-/// `AVAudioConverter`, which carries resampling state across calls and would be
-/// corrupted by two threads entering it at once.
+/// it without going back through the registry that owns it.
+///
+/// The lock guards the `AVAudioConverter` and nothing else: it carries
+/// resampling state across calls and two threads entering it at once would
+/// corrupt it. It deliberately does not order delivery — it is released before
+/// the yield, so two threads sending for this source could convert in lock
+/// order and still reach the analyzer reversed. Keeping one appender per source
+/// is the caller's contract; see `LiveTranscriptionServiceProtocol`.
 final class AnalyzerInputSink: @unchecked Sendable {
     /// Format the analyzer advertised, or nil to feed buffers through unchanged.
     let targetFormat: AVAudioFormat?
@@ -26,10 +31,11 @@ final class AnalyzerInputSink: @unchecked Sendable {
 
     /// Hands a captured buffer to the analyzer, resampling first if needed.
     ///
-    /// Called synchronously from realtime audio threads. Yielding into an
-    /// unbounded `AsyncStream` never suspends and never drops, which matters
-    /// because a missing buffer leaves a hole the analyzer reads as disordered
-    /// audio and then rejects everything after it.
+    /// Called synchronously from a realtime audio thread, one thread at a time
+    /// for this sink. Yielding into an unbounded `AsyncStream` never suspends
+    /// and never drops, which matters because a missing buffer leaves a hole
+    /// the analyzer reads as disordered audio and then rejects everything
+    /// after it.
     func send(_ tagged: TaggedAudioBuffer) {
         // A zero-frame buffer repeats the previous timestamp, and SpeechAnalyzer
         // requires strictly increasing ones.
@@ -95,11 +101,13 @@ final class AnalyzerInputSink: @unchecked Sendable {
 
 /// Maps capture sources to their analyzer input sinks.
 ///
-/// `prepare` and `finish` mutate this from async contexts while capture
+/// `prepare` and `finish` mutate this from the main actor while capture
 /// callbacks read it from realtime audio threads. Every access takes an unfair
-/// lock whose critical section is a dictionary lookup or a swap — no allocation,
-/// no framework calls, no I/O — so an audio thread can never be held up behind
-/// slow work, and priority inheritance keeps a preempted writer from stalling it.
+/// lock. The read path an audio thread takes is one dictionary lookup: no
+/// allocation, no framework calls, no I/O. The write paths can allocate —
+/// `register` on dictionary growth, `removeAll` for the array it hands back —
+/// but they run at most once per source per recording, and priority inheritance
+/// keeps a preempted writer from stalling the audio thread behind them.
 final class AnalyzerInputRegistry: @unchecked Sendable {
     private let sinks = OSAllocatedUnfairLock<[AudioSource: AnalyzerInputSink]>(uncheckedState: [:])
 
@@ -118,9 +126,9 @@ final class AnalyzerInputRegistry: @unchecked Sendable {
     /// Empties the registry and returns what it held, so a concurrent `append`
     /// stops finding sinks before any of them is finished.
     func removeAll() -> [AnalyzerInputSink] {
-        sinks.withLockUnchecked { sinks in
-            defer { sinks.removeAll() }
-            return Array(sinks.values)
+        sinks.withLockUnchecked { registered in
+            defer { registered.removeAll() }
+            return Array(registered.values)
         }
     }
 }
