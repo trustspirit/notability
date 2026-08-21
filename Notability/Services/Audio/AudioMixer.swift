@@ -117,47 +117,13 @@ private struct ChunkMixer {
 
     /// Reads up to `frameCount` frames from every unexhausted track, sums
     /// them with `gain` applied, clamps to [-1, 1], and returns the result
-    /// ready to write. A track that returns fewer frames than requested —
-    /// including zero, when its length is an exact multiple of the chunk
-    /// size — is marked exhausted and treated as silence for the rest of
-    /// the mix.
+    /// ready to write. A track that has run out is treated as silence for
+    /// the rest of the mix.
     mutating func mixChunk(frameCount: Int) throws -> AVAudioPCMBuffer {
         for index in 0..<frameCount { mixChannel[index] = 0 }
 
-        for trackIndex in 0..<readers.count {
-            guard !exhausted[trackIndex] else { continue }
-            let file = readers[trackIndex]
-            // AVAudioFile.read(into:frameCount:) throws rather than returning
-            // zero frames when called exactly at end-of-file, which happens
-            // whenever a track's length is a multiple of the chunk size. Check
-            // the position first so that case is silence, not a thrown error.
-            guard file.framePosition < file.length else {
-                exhausted[trackIndex] = true
-                continue
-            }
-            let readBuffer = readBuffers[trackIndex]
-            try file.read(into: readBuffer, frameCount: AVAudioFrameCount(frameCount))
-            let framesRead = Int(readBuffer.frameLength)
-            guard framesRead > 0 else {
-                exhausted[trackIndex] = true
-                continue
-            }
-
-            if let floats = readBuffer.floatChannelData {
-                for index in 0..<framesRead {
-                    mixChannel[index] += floats[0][index] * gain
-                }
-            } else if let ints = readBuffer.int16ChannelData {
-                for index in 0..<framesRead {
-                    mixChannel[index] += (Float(ints[0][index]) / 32_768) * gain
-                }
-            } else {
-                throw AudioMixerError.unreadableTrack(tracks[trackIndex])
-            }
-
-            if framesRead < frameCount {
-                exhausted[trackIndex] = true
-            }
+        for trackIndex in 0..<readers.count where !exhausted[trackIndex] {
+            try sumTrack(trackIndex, frameCount: frameCount)
         }
 
         for index in 0..<frameCount {
@@ -165,5 +131,44 @@ private struct ChunkMixer {
         }
         mixBuffer.frameLength = AVAudioFrameCount(frameCount)
         return mixBuffer
+    }
+
+    private mutating func sumTrack(_ trackIndex: Int, frameCount: Int) throws {
+        let file = readers[trackIndex]
+        let readBuffer = readBuffers[trackIndex]
+        var offset = 0
+
+        while offset < frameCount {
+            // AVAudioFile.read(into:frameCount:) throws rather than returning
+            // zero frames when called exactly at end-of-file, which happens
+            // whenever a track's length is a multiple of the chunk size. Check
+            // the position first so that case is silence, not a thrown error.
+            guard file.framePosition < file.length else {
+                exhausted[trackIndex] = true
+                return
+            }
+            // A read can also stop on an internal buffer boundary short of the
+            // requested count while the track still has audio left, so a short
+            // read is not by itself the end of the track.
+            try file.read(into: readBuffer, frameCount: AVAudioFrameCount(frameCount - offset))
+            let framesRead = Int(readBuffer.frameLength)
+            guard framesRead > 0 else {
+                exhausted[trackIndex] = true
+                return
+            }
+
+            if let floats = readBuffer.floatChannelData {
+                for index in 0..<framesRead {
+                    mixChannel[offset + index] += floats[0][index] * gain
+                }
+            } else if let ints = readBuffer.int16ChannelData {
+                for index in 0..<framesRead {
+                    mixChannel[offset + index] += (Float(ints[0][index]) / 32_768) * gain
+                }
+            } else {
+                throw AudioMixerError.unreadableTrack(tracks[trackIndex])
+            }
+            offset += framesRead
+        }
     }
 }
