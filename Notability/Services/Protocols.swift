@@ -30,6 +30,34 @@ protocol AudioCaptureServiceProtocol {
     func stopCapture() async
 }
 
+enum LiveTranscriptionEvent: Equatable {
+    /// Speech model asset download in progress, 0...1. Roughly 300 MB on first
+    /// run for Korean, so this needs to be visible rather than a silent stall.
+    case downloading(progress: Double)
+    /// Analyzers are running; any download notice can be cleared.
+    case ready
+    /// Provisional text that replaces the previous volatile text for this source.
+    case volatile(source: AudioSource, text: String, startTime: TimeInterval)
+    /// Confirmed text. Clears any volatile text for this source.
+    case finalized(source: AudioSource, text: String, startTime: TimeInterval)
+    /// Live captions cannot run. Recording continues; the final pass is unaffected.
+    case unavailable(String)
+}
+
+/// Display-only captions produced while recording. Implementations are single
+/// use: `events` terminates on `finish()` and `prepare` must not be called
+/// again afterwards, so a new recording needs a new instance.
+///
+/// `prepare` and `finish` must be called from one serialized context. `append`
+/// is free-threaded by design — it is driven from realtime audio callbacks and
+/// must never be wrapped in a task, because that would reorder buffers.
+protocol LiveTranscriptionServiceProtocol: AnyObject {
+    var events: AsyncStream<LiveTranscriptionEvent> { get }
+    func prepare(sources: [AudioSource], locale: Locale) async
+    func append(_ buffer: TaggedAudioBuffer)
+    func finish() async
+}
+
 struct DiarizedTranscription: Equatable {
     let chunks: [TranscriptChunk]
     /// usage.seconds reported by the API, for cost display. nil when absent.
