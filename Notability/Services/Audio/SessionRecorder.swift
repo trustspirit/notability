@@ -6,6 +6,12 @@ import AVFoundation
 final class SessionRecorder {
     let url: URL
 
+    /// Set when the first on-disk write fails. Meeting audio is kept until note
+    /// generation succeeds so a failed run can be retried; without surfacing write
+    /// failures the file would be silently truncated and downstream transcription
+    /// would produce an incomplete transcript with no indication to retry.
+    private(set) var writeError: Error?
+
     private var file: AVAudioFile?
     private let queue = DispatchQueue(label: "com.notability.sessionrecorder", qos: .utility)
 
@@ -34,11 +40,13 @@ final class SessionRecorder {
     func append(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0 else { return }
         queue.async { [weak self] in
-            guard let file = self?.file else { return }
+            guard let self, let file = self.file else { return }
             do {
                 try file.write(from: buffer)
             } catch {
-                print("[SessionRecorder] write failed: \(error)")
+                if self.writeError == nil {
+                    self.writeError = error
+                }
             }
         }
     }

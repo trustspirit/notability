@@ -36,6 +36,14 @@ final class SessionRecorderTests: XCTestCase {
         XCTAssertEqual(duration, 2.0, accuracy: 0.1)
     }
 
+    func test_successful_recording_reports_no_write_error() throws {
+        let recorder = try SessionRecorder(directory: directory, source: .microphone, sampleRate: 16_000)
+        recorder.append(AudioFixtures.tone(seconds: 1.0))
+        recorder.finish()
+
+        XCTAssertNil(recorder.writeError)
+    }
+
     func test_append_after_finish_is_ignored() throws {
         let recorder = try SessionRecorder(directory: directory, source: .microphone, sampleRate: 16_000)
         recorder.append(AudioFixtures.tone(seconds: 1.0))
