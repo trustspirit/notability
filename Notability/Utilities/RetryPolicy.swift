@@ -27,10 +27,12 @@ struct RetryPolicy {
         guard !(error is CancellationError) else { return false }
         guard let urlError = error as? URLError else { return false }
         switch urlError.code {
+        // Deliberately excludes .secureConnectionFailed: a TLS handshake
+        // failure is as likely to be a misconfigured proxy or an intercepted
+        // connection as a flaky one, and retrying only delays surfacing it.
         case .timedOut, .networkConnectionLost, .notConnectedToInternet,
              .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
-             .dataNotAllowed, .internationalRoamingOff, .callIsActive,
-             .secureConnectionFailed:
+             .dataNotAllowed:
             return true
         default:
             return false

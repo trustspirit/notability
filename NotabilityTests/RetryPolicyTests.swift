@@ -37,6 +37,14 @@ final class RetryPolicyTests: XCTestCase {
         XCTAssertTrue(RetryPolicy.isRetryable(error: URLError(.notConnectedToInternet)))
         XCTAssertTrue(RetryPolicy.isRetryable(error: URLError(.cannotConnectToHost)))
         XCTAssertTrue(RetryPolicy.isRetryable(error: URLError(.dnsLookupFailed)))
+        XCTAssertTrue(RetryPolicy.isRetryable(error: URLError(.dataNotAllowed)))
+    }
+
+    func test_tls_handshake_failure_is_not_retryable() {
+        // A failed handshake is as likely to be a misconfigured proxy or an
+        // intercepted connection as a flaky one, and retrying only delays
+        // showing the user something they have to act on.
+        XCTAssertFalse(RetryPolicy.isRetryable(error: URLError(.secureConnectionFailed)))
     }
 
     func test_url_error_cancelled_is_not_retryable() {
