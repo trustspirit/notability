@@ -37,4 +37,9 @@ final class FrameClockTests: XCTestCase {
         XCTAssertEqual(AudioSource.microphone.defaultSpeakerLabel, "나")
         XCTAssertEqual(AudioSource.systemAudio.defaultSpeakerLabel, "상대방")
     }
+
+    func test_audioSource_file_base_names() {
+        XCTAssertEqual(AudioSource.microphone.fileBaseName, "mic")
+        XCTAssertEqual(AudioSource.systemAudio.fileBaseName, "system")
+    }
 }
