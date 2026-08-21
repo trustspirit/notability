@@ -51,74 +51,87 @@ enum SpeakerReferenceExtractor {
             let systemRMS = try systemReader?.nextBlockRMS() ?? 0
 
             if let matchStart = scanner.push(micRMS: micRMS, systemRMS: systemRMS) {
-                let frameStart = matchStart * blockFrames
-                return try extractWindow(from: micFile, frameStart: frameStart, windowFrames: windowFrames, sampleRate: sampleRate)
+                return try extractWindow(
+                    micURL: micURL,
+                    frameStart: matchStart * blockFrames,
+                    windowFrames: windowFrames,
+                    sampleRate: sampleRate
+                )
             }
         }
 
         return nil
     }
 
+    /// Re-opens the track as Int16 instead of reusing the file the scan read
+    /// from. The clip ships as 16-bit PCM, so letting AVAudioFile do that
+    /// conversion once avoids a lossy round-trip through Float, and the
+    /// scanning file keeps its own read position.
     private static func extractWindow(
-        from file: AVAudioFile,
+        micURL: URL,
         frameStart: Int,
         windowFrames: Int,
         sampleRate: Double
     ) throws -> Data? {
-        let framesAvailable = Int(file.length) - frameStart
-        let framesToRead = min(windowFrames, framesAvailable)
+        let file = try AVAudioFile(forReading: micURL, commonFormat: .pcmFormatInt16, interleaved: false)
+        let framesToRead = min(windowFrames, Int(file.length) - frameStart)
         guard framesToRead > 0 else { return nil }
 
-        file.framePosition = AVAudioFramePosition(frameStart)
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat,
-            frameCapacity: AVAudioFrameCount(framesToRead)
-        ) else {
-            return nil
-        }
-        try file.read(into: buffer, frameCount: AVAudioFrameCount(framesToRead))
-
-        return try wavData(from: buffer, sampleRate: sampleRate)
+        let samples = try readSamples(from: file, frameStart: frameStart, frameCount: framesToRead)
+        guard !samples.isEmpty else { return nil }
+        return try wavData(from: samples, sampleRate: sampleRate)
     }
 
-    private static func wavData(from buffer: AVAudioPCMBuffer, sampleRate: Double) throws -> Data? {
-        guard let outputFormat = AVAudioFormat(
+    private static func readSamples(
+        from file: AVAudioFile,
+        frameStart: Int,
+        frameCount: Int
+    ) throws -> [Int16] {
+        guard let scratch = AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: AVAudioFrameCount(frameCount)
+        ) else {
+            return []
+        }
+        file.framePosition = AVAudioFramePosition(frameStart)
+
+        var samples: [Int16] = []
+        samples.reserveCapacity(frameCount)
+        // A single read stops on an internal buffer boundary rather than
+        // filling the request, so a ten-second window needs several passes.
+        while samples.count < frameCount, file.framePosition < file.length {
+            try file.read(into: scratch, frameCount: AVAudioFrameCount(frameCount - samples.count))
+            guard scratch.frameLength > 0, let channel = scratch.int16ChannelData else { break }
+            samples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: Int(scratch.frameLength)))
+        }
+        return samples
+    }
+
+    private static func wavData(from samples: [Int16], sampleRate: Double) throws -> Data? {
+        guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: sampleRate,
             channels: 1,
             interleaved: false
+        ), let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(samples.count)
         ) else {
             return nil
+        }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { source in
+            buffer.int16ChannelData![0].update(from: source.baseAddress!, count: samples.count)
         }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let frameCount = Int(buffer.frameLength)
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: AVAudioFrameCount(frameCount)
-        ) else {
-            return nil
-        }
-        outputBuffer.frameLength = AVAudioFrameCount(frameCount)
-        let destination = outputBuffer.int16ChannelData![0]
-
-        if let floats = buffer.floatChannelData {
-            for index in 0..<frameCount {
-                destination[index] = Int16(max(-1, min(1, floats[0][index])) * 32_767)
-            }
-        } else if let ints = buffer.int16ChannelData {
-            for index in 0..<frameCount {
-                destination[index] = ints[0][index]
-            }
-        }
-
         // Writing must happen in its own scope: a WAV header's frame count is
         // only finalized when the writer's AVAudioFile is deallocated, so
         // reading the bytes back has to wait until after that happens.
-        try writeWAV(outputBuffer, format: outputFormat, to: url)
+        try writeWAV(buffer, format: format, to: url)
         return try Data(contentsOf: url)
     }
 

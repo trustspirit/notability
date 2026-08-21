@@ -60,26 +60,27 @@ final class SpeakerReferenceExtractorTests: XCTestCase {
         XCTAssertNil(reference)
     }
 
-    /// The other tests only check the extracted clip's duration, which a
-    /// wrong start-offset calculation could still satisfy. Here the mic is
-    /// silent until the system track goes quiet at 8s, so only a window
-    /// starting at 8s is valid; checking the extracted clip's RMS confirms
-    /// it actually came from the tone at [8s, 18s) and not from the silent
-    /// lead-in or some other offset.
+    /// The other tests only check the extracted clip's duration, which a wrong
+    /// start-offset calculation could still satisfy. The system track here is
+    /// quiet for exactly one window's worth of audio — [8s, 18s) out of a 20s
+    /// recording — so exactly one of the 10s windows can qualify and the
+    /// extractor has no slack to land on a neighbouring offset. Measuring the
+    /// clip's RMS then proves it came from that window: the mic is silent
+    /// outside it, so any other offset mixes in silence and reads lower.
     func test_extracted_window_starts_where_the_system_track_actually_goes_quiet() throws {
         let micURL = directory.appendingPathComponent("mic.wav")
         let systemURL = directory.appendingPathComponent("system.wav")
         let totalSeconds = 20.0
-        let quietAt = 8.0
+        let quietRange = 8.0..<18.0
 
         let micBuffer = AudioFixtures.buffer(seconds: totalSeconds) { index in
             let seconds = Double(index) / 16_000
-            guard seconds >= quietAt else { return 0 }
+            guard quietRange.contains(seconds) else { return 0 }
             return 0.4 * sinf(2 * .pi * 440 * Float(index) / 16_000)
         }
         let systemBuffer = AudioFixtures.buffer(seconds: totalSeconds) { index in
             let seconds = Double(index) / 16_000
-            guard seconds < quietAt else { return 0 }
+            guard !quietRange.contains(seconds) else { return 0 }
             return 0.4 * sinf(2 * .pi * 440 * Float(index) / 16_000)
         }
         try AudioFixtures.writeWAV(micBuffer, to: micURL)
@@ -90,10 +91,42 @@ final class SpeakerReferenceExtractorTests: XCTestCase {
         let data = try XCTUnwrap(reference)
         let extractedURL = directory.appendingPathComponent("ref.wav")
         try data.write(to: extractedURL)
-        // A window drawn from the silent lead-in (or any offset that mixes
-        // silence and tone) would measure far below this; only [8s, 18s) is
-        // pure 0.4-amplitude tone, whose RMS is amplitude / sqrt(2) ≈ 0.283.
-        let rms = try AudioFixtures.rms(ofFileAt: extractedURL)
-        XCTAssertEqual(rms, 0.283, accuracy: 0.05)
+
+        let extracted = try samples(ofFileAt: extractedURL)
+        let expected = samples(of: micBuffer)
+        let start = Int(quietRange.lowerBound * 16_000)
+        XCTAssertEqual(extracted.count, 160_000)
+        // A 440 Hz tone at 16 kHz has a 36.4-frame period, so comparing
+        // samples rather than an aggregate like RMS catches a start offset
+        // that is wrong by even a single frame.
+        XCTAssertEqual(Array(extracted.prefix(256)), Array(expected[start..<(start + 256)]))
+        XCTAssertEqual(Array(extracted.suffix(256)), Array(expected[(start + 160_000 - 256)..<(start + 160_000)]))
+    }
+
+    private func samples(of buffer: AVAudioPCMBuffer) -> [Int16] {
+        let channel = buffer.int16ChannelData![0]
+        return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    }
+
+    private func samples(ofFileAt url: URL) throws -> [Int16] {
+        let file = try AVAudioFile(
+            forReading: url,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: file.processingFormat,
+            frameCapacity: AVAudioFrameCount(file.length)
+        )!
+
+        // AVAudioFile.read stops on an internal buffer boundary well short of
+        // a ten-second request, so a single call would silently truncate.
+        var result: [Int16] = []
+        while file.framePosition < file.length {
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { break }
+            result.append(contentsOf: samples(of: buffer))
+        }
+        return result
     }
 }
