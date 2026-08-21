@@ -30,6 +30,20 @@ protocol AudioCaptureServiceProtocol {
     func stopCapture() async
 }
 
+struct DiarizedTranscription: Equatable {
+    let chunks: [TranscriptChunk]
+    /// usage.seconds reported by the API, for cost display. nil when absent.
+    let billedSeconds: Int?
+}
+
+protocol FinalTranscriptionServiceProtocol {
+    func transcribe(
+        audioURL: URL,
+        speakerReference: Data?,
+        language: String?
+    ) async throws -> DiarizedTranscription
+}
+
 protocol TranscriptionServiceProtocol {
     func transcribe(
         audioURL: URL,
