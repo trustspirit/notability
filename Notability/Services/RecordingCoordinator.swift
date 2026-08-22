@@ -27,15 +27,22 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var visibleLiveTranscript: [TranscriptChunk] = []
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var systemAudioAvailable = true
-    /// False when the system echo canceller could not be started, which means the
-    /// far end is in both tracks and gets transcribed and billed twice.
+    /// False when the system echo canceller could not be started. This only
+    /// costs anything while system audio is captured too: the far end then
+    /// bleeds from the speakers into the microphone track *and* arrives on its
+    /// own track, so the mix contains it twice and it is transcribed and billed
+    /// twice. With no system track there is only ever one copy, which is why the
+    /// recording view shows this warning only when system audio is available.
     @Published private(set) var echoCancellationEnabled = true
     /// Non-nil when on-device captions are degraded or downloading. The recording
     /// and the final transcript are unaffected.
     @Published private(set) var liveCaptionNotice: String?
     /// Non-nil when the last recording was ended by something other than the
-    /// user. Lives only as long as the app session; the accompanying system
-    /// notification is what reaches a user who is not looking at the app.
+    /// user. Shown as a banner over the detail column until dismissed, because a
+    /// user who returns to the app after the fact has no other way to learn why
+    /// the recording stopped. Lives only as long as the app session; the
+    /// accompanying system notification is what reaches a user who is not
+    /// looking at the app.
     @Published private(set) var recordingInterruptedNotice: String?
     @Published private(set) var currentMeetingId: UUID?
 
@@ -89,6 +96,13 @@ final class RecordingCoordinator: ObservableObject {
 
     func resetToIdle() {
         state = .idle
+        recordingInterruptedNotice = nil
+    }
+
+    /// Clears the interruption banner without touching `state`, which may still
+    /// be mid-pipeline: the interruption stopped the recording, and processing of
+    /// what was captured carries on after the user has read the notice.
+    func dismissRecordingInterruptedNotice() {
         recordingInterruptedNotice = nil
     }
 

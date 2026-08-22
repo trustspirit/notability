@@ -11,26 +11,24 @@ struct MainWindowView: View {
             MeetingSidebarView(selectedMeetingId: $selectedMeetingId)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 400)
         } detail: {
-            if case .recording = coordinator.state {
-                LiveRecordingView()
-            } else if let id = selectedMeetingId, let meeting = store.fetch(id: id) {
-                MeetingDetailView(meeting: meeting)
-                    .id(meeting.id)  // force fresh @State (selectedTab, titleInput) per meeting
-            } else if case .transcribing = coordinator.state {
-                BrandedEmptyState(
-                    title: "Generating notes…",
-                    systemImage: "sparkles",
-                    message: "We're turning your conversation into structured notes."
-                )
-            } else {
-                BrandedEmptyState(
-                    title: store.allMeetings.isEmpty ? "Welcome to Notability" : "Select a meeting",
-                    systemImage: store.allMeetings.isEmpty ? "waveform.circle" : "list.bullet",
-                    message: store.allMeetings.isEmpty
-                        ? "Press the Record button to capture your first meeting. Notability transcribes audio and generates a summary, action items, and decisions."
-                        : "Pick a meeting from the sidebar to view its summary and action items."
-                )
+            VStack(spacing: 0) {
+                // Above the detail content rather than inside any one view: the
+                // recording has already ended by the time this is set, so there is
+                // no recording screen left to put it on, and it explains the app's
+                // behaviour rather than the selected meeting's.
+                if let notice = coordinator.recordingInterruptedNotice {
+                    WarningBanner(
+                        title: "Recording stopped unexpectedly",
+                        message: notice,
+                        systemImage: "mic.slash.fill",
+                        action: ("Dismiss", { coordinator.dismissRecordingInterruptedNotice() })
+                    )
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.top, Spacing.lg)
+                }
+                detailContent
             }
+            .background(BrandColor.surfaceElevated)
         }
         .frame(minWidth: 820, minHeight: 560)
         .toolbar(removing: .sidebarToggle)
@@ -44,6 +42,38 @@ struct MainWindowView: View {
                 break
             }
         }
+    }
+
+    private var detailContent: some View {
+        Group {
+            if case .recording = coordinator.state {
+                LiveRecordingView()
+            } else if let id = selectedMeetingId, let meeting = store.fetch(id: id) {
+                MeetingDetailView(meeting: meeting)
+                    .id(meeting.id)  // force fresh @State (selectedTab, titleInput) per meeting
+            } else if case .transcribing = coordinator.state {
+                BrandedEmptyState(
+                    title: "Transcribing the recording…",
+                    systemImage: "waveform",
+                    message: "The whole meeting is transcribed in one pass so speakers can be told apart."
+                )
+            } else if case .generatingNotes = coordinator.state {
+                BrandedEmptyState(
+                    title: "Generating meeting notes…",
+                    systemImage: "sparkles",
+                    message: "We're turning your conversation into structured notes."
+                )
+            } else {
+                BrandedEmptyState(
+                    title: store.allMeetings.isEmpty ? "Welcome to Notability" : "Select a meeting",
+                    systemImage: store.allMeetings.isEmpty ? "waveform.circle" : "list.bullet",
+                    message: store.allMeetings.isEmpty
+                        ? "Press the Record button to capture your first meeting. Notability transcribes audio and generates a summary, action items, and decisions."
+                        : "Pick a meeting from the sidebar to view its summary and action items."
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -59,9 +89,7 @@ private struct LiveRecordingView: View {
             header
             Divider().opacity(0.5)
             waveform
-            if !coordinator.systemAudioAvailable {
-                systemAudioBanner
-            }
+            captureWarning
             transcriptArea(rows: transcriptRows)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -111,30 +139,35 @@ private struct LiveRecordingView: View {
             .padding(.vertical, Spacing.md)
     }
 
-    private var systemAudioBanner: some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "speaker.slash.fill")
-                .foregroundStyle(BrandColor.warning)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("System audio unavailable")
-                    .font(.caption.weight(.semibold))
-                Text("Only your microphone is being captured. Grant Screen Recording in System Settings for full meeting transcription.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Open Settings") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-            }
-            .controlSize(.small)
+    /// Only ever one banner: stacking two turns the recording view into a wall of
+    /// warnings for what is a common setup.
+    ///
+    /// Both conditions can hold at once, but the echo-cancellation warning is
+    /// only *true* when system audio is being captured — the double transcription
+    /// and double billing it warns about need that second copy of the far end.
+    /// With no system track there is one copy either way, so when system audio is
+    /// missing that warning would be a false alarm on top of the more serious
+    /// problem that half the meeting is not being recorded.
+    @ViewBuilder
+    private var captureWarning: some View {
+        if !coordinator.systemAudioAvailable {
+            WarningBanner(
+                title: "System audio unavailable",
+                message: "Only your microphone is being captured. Grant Screen Recording in System Settings for full meeting transcription.",
+                systemImage: "speaker.slash.fill",
+                action: ("Open Settings", {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                })
+            )
+            .padding(.horizontal, Spacing.lg)
+        } else if !coordinator.echoCancellationEnabled {
+            WarningBanner(
+                title: "Echo cancellation unavailable",
+                message: "Your speakers are bleeding into the microphone, so the other side will be transcribed twice and billed twice. Use headphones for this meeting.",
+                systemImage: "speaker.wave.2.fill"
+            )
+            .padding(.horizontal, Spacing.lg)
         }
-        .padding(Spacing.md)
-        .background(BrandColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
-                .strokeBorder(BrandColor.warning.opacity(0.25), lineWidth: 0.5)
-        )
-        .padding(.horizontal, Spacing.lg)
     }
 
     @ViewBuilder
@@ -150,9 +183,9 @@ private struct LiveRecordingView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Spacing.sm) {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { index, chunk in
-                            TranscriptRow(timestamp: chunk.timestamp, text: chunk.text)
-                                .id(index)
+                        ForEach(rows.identifiedRows()) { row in
+                            TranscriptRow(chunk: row.chunk)
+                                .id(row.id)
                         }
                     }
                     .padding(Spacing.lg)

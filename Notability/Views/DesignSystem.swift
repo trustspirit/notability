@@ -88,6 +88,45 @@ struct Pill: View {
     }
 }
 
+// MARK: - Inline warning
+
+/// Warns about a degraded condition while leaving the content below it usable.
+/// `BrandedEmptyState` is the counterpart for when there is nothing to show at
+/// all. Callers are responsible for keeping at most one of these on screen: two
+/// stacked banners turn the recording view into a wall of warnings.
+struct WarningBanner: View {
+    let title: String
+    let message: String
+    var systemImage: String = "exclamationmark.triangle.fill"
+    var action: (label: String, perform: () -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: systemImage)
+                .foregroundStyle(BrandColor.warning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: Spacing.sm)
+            if let action {
+                Button(action.label, action: action.perform)
+                    .controlSize(.small)
+            }
+        }
+        .padding(Spacing.md)
+        .background(BrandColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                .strokeBorder(BrandColor.warning.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+}
+
 // MARK: - Branded empty state
 
 struct BrandedEmptyState: View {

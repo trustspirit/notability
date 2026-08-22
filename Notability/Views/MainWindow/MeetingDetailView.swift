@@ -75,6 +75,14 @@ struct MeetingDetailView: View {
                 HStack(spacing: Spacing.sm) {
                     Label(meeting.date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                     Label(formatDuration(meeting.durationSeconds), systemImage: "clock")
+                    // Absent for meetings transcribed before this was recorded, and
+                    // for any meeting whose transcription never succeeded. Shown
+                    // next to the wall-clock duration because the two differ: the
+                    // API bills the mixed audio it actually processed.
+                    if let billed = meeting.billedSeconds {
+                        Label("Billed \(formatDuration(Double(billed)))", systemImage: "creditcard")
+                            .help("Audio billed by the transcription API for this meeting. Live captions during the meeting were free.")
+                    }
                     if meeting.notes == nil && meeting.notesGenerationError == nil {
                         Pill(text: "Generating", systemImage: "sparkles", tint: BrandColor.warning)
                     } else if meeting.notesGenerationError != nil {
