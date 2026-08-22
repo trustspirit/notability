@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var store: MeetingStore!
     private(set) var coordinator: RecordingCoordinator!
     private var stateObserver: Task<Void, Never>?
+    private let relauncher = Relauncher(launchSuccessor: Relauncher.launchAnotherInstance)
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
         updaterDelegate: nil,
@@ -198,6 +199,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             • If Notability is not listed → add it, then relaunch
             • If it is already enabled → toggle OFF, then ON, then relaunch
             """
+        // Reached from the recording view's banner, where quitting is not ours to
+        // decide: the same prompt as any other quit gets the final say. Saying so
+        // here stops that prompt from arriving unexplained, which reads as the
+        // relaunch having failed.
+        if case .ask = QuitPolicy.decision(for: coordinator.state) {
+            alert.informativeText += "\n\nRelaunching means quitting, and something is still "
+                + "in progress, so Notability will ask what to do with it before it restarts."
+        }
         alert.addButton(withTitle: "Open Settings & Relaunch")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
@@ -227,11 +236,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Asks to quit and restart. The restart is contingent: quitting can be
+    /// declined, in which case nothing has been started and the app carries on.
     private func relaunch() {
-        let task = Process()
-        task.launchPath = "/usr/bin/open"
-        task.arguments = ["-n", Bundle.main.bundleURL.path]
-        try? task.run()
+        relauncher.requestRelaunchAfterTermination()
         NSApp.terminate(nil)
     }
 
@@ -341,6 +349,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// point of keeping the audio is that it can be read later.
     func applicationWillTerminate(_ notification: Notification) {
         coordinator?.finalizeAudioForTermination()
+        // Strictly after the audio is closed. The replacement inspects the
+        // meeting's audio on launch to decide whether it can be retried, and an
+        // unclosed file reads as unusable.
+        relauncher.launchSuccessorIfRequested()
     }
 
     private func requestNotificationPermission() {
