@@ -59,10 +59,39 @@ final class MeetingStoreTests: XCTestCase {
         let reloaded = sut2.fetch(id: meeting.id)
 
         XCTAssertEqual(reloaded?.transcript, meeting.transcript)
-        XCTAssertEqual(
+        XCTAssertEqual(reloaded?.transcriptionError?.isEmpty, false)
+        XCTAssertNil(
             reloaded?.notesGenerationError,
-            "Recording or note generation was interrupted. Any completed transcript segments were saved."
+            "An interrupted recording died before transcription, so Retry must redo that stage"
         )
+    }
+
+    /// Reloading must not overwrite a failure the pipeline already recorded —
+    /// the meeting would then say it was interrupted instead of saying it was
+    /// rate limited, and the reason to retry would be lost.
+    func test_reload_keeps_a_recorded_transcription_failure() {
+        var meeting = makeMeeting(title: "Rate limited")
+        meeting.transcriptionError = "OpenAI rate limit or quota exceeded (HTTP 429)."
+        sut.save(meeting)
+
+        let sut2 = MeetingStore(storageDirectory: tempDir)
+
+        XCTAssertEqual(
+            sut2.fetch(id: meeting.id)?.transcriptionError,
+            "OpenAI rate limit or quota exceeded (HTTP 429)."
+        )
+    }
+
+    func test_reload_keeps_a_recorded_note_generation_failure() {
+        var meeting = makeMeeting(title: "Notes failed")
+        meeting.notesGenerationError = "notes exploded"
+        sut.save(meeting)
+
+        let sut2 = MeetingStore(storageDirectory: tempDir)
+        let reloaded = sut2.fetch(id: meeting.id)
+
+        XCTAssertEqual(reloaded?.notesGenerationError, "notes exploded")
+        XCTAssertNil(reloaded?.transcriptionError)
     }
 
     func test_meetings_publisher_emits_on_save() {

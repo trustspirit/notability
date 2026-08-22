@@ -1,9 +1,21 @@
 import AVFoundation
 
+/// What the recording layer needs from a per-source audio writer.
+///
+/// `append` is called from realtime capture threads and must not block; see
+/// `SessionRecorder` for the guarantees the real implementation makes, including
+/// when `writeError` may be read.
+protocol SessionAudioWriting: AnyObject {
+    var url: URL { get }
+    var writeError: Error? { get }
+    func append(_ buffer: AVAudioPCMBuffer)
+    func finish()
+}
+
 /// Continuously records one capture source to an AAC file for the duration of a
 /// meeting. Roughly 11 MB per hour at 24 kbps, which keeps a two-hour meeting
 /// under the transcription API's 25 MB upload limit.
-final class SessionRecorder {
+final class SessionRecorder: SessionAudioWriting {
     let url: URL
 
     /// Set when the first on-disk write fails. Meeting audio is kept until note

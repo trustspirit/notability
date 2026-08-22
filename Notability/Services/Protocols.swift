@@ -10,9 +10,6 @@ protocol MeetingStoreProtocol {
     func save(_ meeting: Meeting)
     func fetch(id: UUID) -> Meeting?
     func delete(id: UUID)
-    // Streaming transcript updates during recording — skips the full-save cost.
-    // Use save() instead when fields beyond transcript/duration may change.
-    func persistTranscriptSnapshot(id: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval)
 }
 
 protocol AudioCaptureServiceProtocol {

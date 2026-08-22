@@ -172,8 +172,8 @@ struct MeetingDetailView: View {
                 title: "Note generation failed",
                 systemImage: "exclamationmark.triangle.fill",
                 message: error,
-                action: meeting.transcript.isEmpty ? nil : ("Retry", {
-                    coordinator.retryNoteGeneration(meetingId: meeting.id)
+                action: meeting.audioDirectory == nil ? nil : ("Retry", {
+                    coordinator.retryProcessing(meetingId: meeting.id)
                 })
             )
         } else {

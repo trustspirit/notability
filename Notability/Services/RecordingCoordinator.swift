@@ -1,127 +1,221 @@
 import Foundation
 import Combine
 import UserNotifications
+import AVFoundation
 
-private actor AsyncSemaphore {
-    private var count: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    init(limit: Int) { count = limit }
-
-    func wait() async {
-        if count > 0 { count -= 1; return }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func signal() {
-        if let first = waiters.first {
-            waiters.removeFirst()
-            first.resume()
-        } else {
-            count += 1
-        }
-    }
-}
-
+/// Drives one meeting from the record button to finished notes.
+///
+/// Two tiers run off the same captured audio. While recording, buffers are fanned
+/// out to a per-source file writer and to on-device live captions. After
+/// recording, the files are mixed and sent through the diarized transcription
+/// pass — one paid call per meeting — and then note generation. The audio is kept
+/// until notes exist, so any failure along the way is retryable rather than
+/// costing the user the meeting.
+///
+/// Main-actor isolated because it publishes the recording UI's state. The audio
+/// path deliberately does not run here: it lives in `CaptureBufferRouter`, which
+/// cannot see this type's state.
 @MainActor
 final class RecordingCoordinator: ObservableObject {
+    typealias LiveTranscriptionFactory = @MainActor () -> LiveTranscriptionServiceProtocol
+    typealias SessionRecorderFactory =
+        @MainActor (URL, AudioSource, Double) throws -> SessionAudioWriting
+
     @Published private(set) var state: RecordingState = .idle
-    @Published var liveTranscript: [TranscriptChunk] = []
-    @Published private(set) var livePartialTranscript: TranscriptChunk?
+    /// Confirmed live captions plus at most one provisional row per source while
+    /// recording; the diarized transcript once one exists.
     @Published private(set) var visibleLiveTranscript: [TranscriptChunk] = []
     @Published private(set) var audioLevel: Float = 0
-    @Published private(set) var systemAudioAvailable: Bool = true
-    @Published private(set) var pendingTranscriptionCount = 0
-    private var livePartialTranscriptToken: UUID?
-    // Source of truth for live transcript state. `liveTranscript` is published
-    // to the UI as a derived value via didSet, so the chunk text and its
-    // merge-window timestamp can never drift apart (would happen if they
-    // lived in two separate arrays).
-    private var liveTranscriptRows: [LiveTranscriptRow] = [] {
-        didSet { liveTranscript = liveTranscriptRows.map(\.chunk) }
-    }
-
-    private struct LiveTranscriptRow {
-        var chunk: TranscriptChunk
-        var lastSourceTimestamp: TimeInterval
-    }
+    @Published private(set) var systemAudioAvailable = true
+    /// False when the system echo canceller could not be started, which means the
+    /// far end is in both tracks and gets transcribed and billed twice.
+    @Published private(set) var echoCancellationEnabled = true
+    /// Non-nil when on-device captions are degraded or downloading. The recording
+    /// and the final transcript are unaffected.
+    @Published private(set) var liveCaptionNotice: String?
+    /// Non-nil when the last recording was ended by something other than the
+    /// user. Lives only as long as the app session; the accompanying system
+    /// notification is what reaches a user who is not looking at the app.
+    @Published private(set) var recordingInterruptedNotice: String?
+    @Published private(set) var currentMeetingId: UUID?
 
     private let audioCapture: AudioCaptureServiceProtocol
-    private let transcription: TranscriptionServiceProtocol
-    private let transcriptionSemaphore = AsyncSemaphore(limit: 4)
+    private let makeLiveTranscription: LiveTranscriptionFactory
+    private let makeSessionRecorder: SessionRecorderFactory
+    private let finalTranscription: FinalTranscriptionServiceProtocol
     private let noteGeneration: NoteGenerationServiceProtocol
     private let store: MeetingStoreProtocol
-    private var chunkHandlingTask: Task<Void, Never>?
-    private var chunkCancellable: AnyCancellable?
-    private var chunkStreamContinuation: AsyncStream<AudioChunk>.Continuation?
-    @Published private(set) var currentMeetingId: UUID?
+    private let audioRootDirectory: URL
+
+    private var captions = LiveCaptionAggregator()
+    private var liveTranscription: LiveTranscriptionServiceProtocol?
+    private var recorders: [AudioSource: SessionAudioWriting] = [:]
+    private var bufferCancellable: AnyCancellable?
+    private var levelCancellable: AnyCancellable?
+    private var systemAudioCancellable: AnyCancellable?
+    private var microphoneCancellable: AnyCancellable?
+    private var prepareTask: Task<Void, Never>?
+    private var liveEventTask: Task<Void, Never>?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
-    private var levelCancellable: AnyCancellable?
-    private var systemAudioAvailabilityCancellable: AnyCancellable?
+    private var isProcessing = false
 
     private static let titleFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm"
-        return f
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
     }()
-    private static let transcriptionFailurePrefix = "[transcription failed"
-    private static let maxMergeTimestampGap: TimeInterval = 8.0
-    private typealias TranscriptMergeEntry = (row: TranscriptChunk, lastSourceTimestamp: TimeInterval)
 
     init(
         audioCapture: AudioCaptureServiceProtocol,
-        transcription: TranscriptionServiceProtocol,
+        makeLiveTranscription: @escaping LiveTranscriptionFactory,
+        finalTranscription: FinalTranscriptionServiceProtocol,
         noteGeneration: NoteGenerationServiceProtocol,
-        store: MeetingStoreProtocol
+        store: MeetingStoreProtocol,
+        audioRootDirectory: URL = MeetingStore.defaultAudioDirectory,
+        makeSessionRecorder: @escaping SessionRecorderFactory = { directory, source, sampleRate in
+            try SessionRecorder(directory: directory, source: source, sampleRate: sampleRate)
+        }
     ) {
         self.audioCapture = audioCapture
-        self.transcription = transcription
+        self.makeLiveTranscription = makeLiveTranscription
+        self.finalTranscription = finalTranscription
         self.noteGeneration = noteGeneration
         self.store = store
+        self.audioRootDirectory = audioRootDirectory
+        self.makeSessionRecorder = makeSessionRecorder
     }
 
     func resetToIdle() {
         state = .idle
+        recordingInterruptedNotice = nil
     }
 
-    func startRecording() async throws {
-        let id = UUID()
-        liveTranscriptRows = []
-        livePartialTranscript = nil
-        visibleLiveTranscript = []
-        livePartialTranscriptToken = nil
-        pendingTranscriptionCount = 0
-        chunkHandlingTask?.cancel()
-        chunkStreamContinuation?.finish()
-        chunkCancellable?.cancel()
-        systemAudioAvailabilityCancellable?.cancel()
+    // MARK: - Recording
 
-        // Start capture first — only save meeting if it actually succeeds.
+    func startRecording() async throws {
+        guard recordingStart == nil else { throw CoordinatorError.alreadyRecording }
+
+        captions = LiveCaptionAggregator()
+        visibleLiveTranscript = []
+        liveCaptionNotice = nil
+        recordingInterruptedNotice = nil
+
         try await audioCapture.startCapture()
         guard audioCapture.isCapturingMicrophone else {
             await audioCapture.stopCapture()
             throw CaptureAvailabilityError.microphoneUnavailable
         }
         systemAudioAvailable = audioCapture.isCapturingSystemAudio
-        systemAudioAvailabilityCancellable = audioCapture.systemAudioAvailabilityPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] available in self?.systemAudioAvailable = available }
+        echoCancellationEnabled = audioCapture.isEchoCancellationEnabled
 
-        let title = "Meeting - \(Self.titleFormatter.string(from: Date()))"
-        let meeting = Meeting(id: id, title: title, date: Date(), durationSeconds: 0, transcript: [], notes: nil, notesGenerationError: nil)
+        let id = UUID()
+        let audioDirectory = audioRootDirectory.appendingPathComponent(id.uuidString)
+        do {
+            try FileManager.default.createDirectory(
+                at: audioDirectory,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            await audioCapture.stopCapture()
+            throw error
+        }
+
+        for source in AudioSource.allCases {
+            // A source that cannot be written still gets live captions, and the
+            // other source's recording is still worth having.
+            recorders[source] = try? makeSessionRecorder(
+                audioDirectory,
+                source,
+                audioCapture.captureFormat.sampleRate
+            )
+        }
+
+        subscribeToAudioPath(routingTo: startLiveTranscription())
+
+        let meeting = Meeting(
+            id: id,
+            title: "Meeting - \(Self.titleFormatter.string(from: Date()))",
+            date: Date(),
+            durationSeconds: 0,
+            transcript: [],
+            notes: nil,
+            notesGenerationError: nil,
+            audioDirectory: audioDirectory
+        )
         store.save(meeting)
         currentMeetingId = id
         recordingStart = Date()
         state = .recording(elapsed: 0)
+        startElapsedTimer()
+        watchCaptureAvailability()
+    }
 
-        // Audio buffers arrive 50–100 times per second; pushing every sample into
-        // SwiftUI saturates the main runloop and eventually corrupts AppKit/SwiftUI
-        // render state after several minutes of recording.
+    /// Starts consuming caption events and kicks off `prepare` without waiting
+    /// for it: the first run installs a ~300 MB speech model, and the user
+    /// pressed Record, not Download. Buffers that arrive before `prepare`
+    /// finishes reach an empty analyzer registry and are dropped, which costs
+    /// only captions — the diarized pass reads the recorded files, not the
+    /// analyzers.
+    private func startLiveTranscription() -> LiveTranscriptionServiceProtocol {
+        let service = makeLiveTranscription()
+        liveTranscription = service
+
+        liveEventTask = Task { [weak self] in
+            for await event in service.events {
+                self?.handle(event)
+            }
+        }
+        let sources = AudioSource.allCases
+        let locale = Locale(identifier: ModelSettings.shared.effectiveTranscriptionLocaleIdentifier)
+        prepareTask = Task { await service.prepare(sources: sources, locale: locale) }
+        return service
+    }
+
+    private func subscribeToAudioPath(routingTo liveTranscription: LiveTranscriptionServiceProtocol) {
+        // Built here, after the recorders and the live service exist, so no
+        // buffer can arrive before there is somewhere to put it. The router holds
+        // everything the audio path needs, which is what keeps this closure from
+        // being able to touch main-actor state.
+        let router = CaptureBufferRouter(
+            recorders: recorders,
+            liveTranscription: liveTranscription
+        )
+        bufferCancellable = audioCapture.bufferPublisher.sink { tagged in
+            router.route(tagged)
+        }
+
+        // Throttled rather than hopped per value: levels arrive with every
+        // buffer, 50–100 times a second per source, and dispatching each one to
+        // the main queue would turn UI congestion into a cost the capture
+        // threads pay.
         levelCancellable = audioCapture.audioLevelPublisher
             .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] level in self?.audioLevel = level }
+    }
 
+    /// Armed once there is a recording to act on, because losing the microphone
+    /// ends it.
+    ///
+    /// Both publishers deliver changes on the main queue and the replayed value
+    /// on the subscribing thread; subscribing from the main actor covers both, so
+    /// neither needs a `receive(on:)` hop.
+    private func watchCaptureAvailability() {
+        systemAudioCancellable = audioCapture.systemAudioAvailabilityPublisher
+            .sink { [weak self] available in self?.systemAudioAvailable = available }
+
+        // The replayed value is not a reliable "microphone is up" signal: the
+        // getter flips inside `startCapture()` while the publisher's send is
+        // dispatched to the main queue, so this subscription can still be
+        // replayed the pre-start `false`. Waiting for the first affirmative
+        // value is what stops that from aborting every recording.
+        microphoneCancellable = audioCapture.microphoneAvailabilityPublisher
+            .drop(while: { !$0 })
+            .filter { !$0 }
+            .sink { [weak self] _ in self?.handleMicrophoneLoss() }
+    }
+
+    private func startElapsedTimer() {
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let start = self.recordingStart else { return }
@@ -130,416 +224,273 @@ final class RecordingCoordinator: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         elapsedTimer = timer
-
-        // Use a sink-backed AsyncStream instead of publisher.values. PassthroughSubject
-        // can emit faster than the async loop polls; sink requests unlimited demand
-        // and forwards every chunk into the stream while the worker pool below keeps
-        // actual transcription concurrency bounded.
-        var continuation: AsyncStream<AudioChunk>.Continuation?
-        let chunkStream = AsyncStream<AudioChunk>(bufferingPolicy: .unbounded) { streamContinuation in
-            continuation = streamContinuation
-        }
-        guard let continuation else { return }
-        chunkStreamContinuation = continuation
-        chunkCancellable = audioCapture.chunkPublisher.sink(
-            receiveCompletion: { _ in continuation.finish() },
-            receiveValue: { chunk in continuation.yield(chunk) }
-        )
-
-        chunkHandlingTask = Task { @MainActor [weak self] in
-            await withTaskGroup(of: Void.self) { group in
-                for await chunk in chunkStream {
-                    guard let self else { break }
-                    await self.transcriptionSemaphore.wait()
-                    self.pendingTranscriptionCount += 1
-                    let semaphore = self.transcriptionSemaphore
-                    group.addTask { [weak self] in
-                        guard let self else {
-                            await semaphore.signal()
-                            return
-                        }
-                        await self.handleChunk(chunk)
-                    }
-                }
-            }
-        }
     }
 
+    private func handle(_ event: LiveTranscriptionEvent) {
+        let change = captions.apply(event)
+        if change.rowsChanged { visibleLiveTranscript = captions.visibleRows }
+        if change.noticeChanged { liveCaptionNotice = captions.notice }
+    }
+
+    /// The capture layer restarts the engine itself on a device change and only
+    /// reports unavailability once that has failed, so there is nothing a retry
+    /// from here would do differently. Carrying on would record the far end
+    /// alone, and a user who is not watching a menu-bar app would not discover
+    /// that until they read the transcript. Ending the recording keeps everything
+    /// captured so far and puts it through the normal pipeline; the user can
+    /// start a new recording once the device settles.
+    private func handleMicrophoneLoss() {
+        guard currentMeetingId != nil else { return }
+        microphoneCancellable?.cancel()
+        microphoneCancellable = nil
+
+        recordingInterruptedNotice = "Recording stopped because the microphone became "
+            + "unavailable, so your voice was no longer being captured. Everything recorded "
+            + "up to that point was kept."
+        sendNotification(
+            title: "Recording stopped",
+            body: "The microphone became unavailable. Notability is processing what it captured."
+        )
+        Task { await stopRecording() }
+    }
+
+    // MARK: - Stopping
+
     func stopRecording() async {
-        elapsedTimer?.invalidate()
-        elapsedTimer = nil
+        guard let id = currentMeetingId else { return }
+
+        // Dropped first so a microphone-loss notification cannot re-enter this
+        // while it is unwinding.
+        microphoneCancellable?.cancel()
+        microphoneCancellable = nil
+        systemAudioCancellable?.cancel()
+        systemAudioCancellable = nil
         levelCancellable?.cancel()
         levelCancellable = nil
         audioLevel = 0
+        elapsedTimer?.invalidate()
+        elapsedTimer = nil
 
-        // stopCapture() flushes the final partial chunk (synchronously) then
-        // sends .finished on the publisher, causing the for-await loop in
-        // chunkHandlingTask to exit after all in-flight Tasks complete.
-        await audioCapture.stopCapture()
-        chunkStreamContinuation?.finish()
-        await chunkHandlingTask?.value
-        chunkHandlingTask = nil
-        chunkCancellable?.cancel()
-        chunkCancellable = nil
-        chunkStreamContinuation = nil
-        systemAudioAvailabilityCancellable?.cancel()
-        systemAudioAvailabilityCancellable = nil
-
-        guard let id = currentMeetingId else { return }
-        defer {
-            currentMeetingId = nil
-            recordingStart = nil
-        }
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
+        currentMeetingId = nil
+        recordingStart = nil
 
-        visibleLiveTranscript = liveTranscript
-        var meeting = store.fetch(id: id) ?? Meeting(id: id, title: "Meeting", date: Date(), durationSeconds: duration, transcript: liveTranscript, notes: nil, notesGenerationError: nil)
+        // `stopCapture()` closes the relay under the same lock the relay
+        // publishes from, so when it returns no `route` call is in progress and
+        // no further one can start. Only after that is it safe to finish the
+        // consumers the router feeds.
+        await audioCapture.stopCapture()
+        bufferCancellable?.cancel()
+        bufferCancellable = nil
+
+        await finishLiveTranscription()
+
+        for recorder in recorders.values { recorder.finish() }
+        // Readable only now: `finish()` drains the writer's own queue, so this is
+        // no longer racing the thread that would set it.
+        let writeFailure = recorders.values.compactMap(\.writeError).first
+        let trackURLs = AudioSource.allCases.compactMap { recorders[$0]?.url }
+        recorders.removeAll()
+
+        // Gone means the user deleted the meeting while it was being recorded.
+        // There is nothing left to process, and leaving `.recording` behind would
+        // strand the UI on a recording screen with no recording.
+        guard var meeting = store.fetch(id: id) else {
+            state = .idle
+            return
+        }
         meeting.durationSeconds = duration
-        meeting.transcript = liveTranscript
         store.save(meeting)
 
-        state = .transcribing
+        // A failed write means the file on disk is truncated. Transcribing it
+        // automatically would bill for, and hand back, a silently incomplete
+        // transcript. The audio is kept, so Retry will process whatever was
+        // captured if the user decides that is worth paying for.
+        if let writeFailure {
+            return fail(
+                meeting: meeting,
+                transcriptionError: "The recording is incomplete — saving audio failed "
+                    + "partway through (\(writeFailure.localizedDescription)). "
+                    + "Your audio has been kept."
+            )
+        }
 
-        do {
-            let validTranscript = liveTranscript.filter { !Self.isTranscriptionFailure($0.text) }
-            guard !validTranscript.isEmpty else {
-                let msg = "No audio was captured or all transcription attempts failed."
-                meeting.notesGenerationError = msg
-                store.save(meeting)
-                state = .failed(msg)
-                sendFailureNotification()
-                return
+        await process(meetingId: id, trackURLs: trackURLs)
+    }
+
+    /// Ends the live caption tier.
+    ///
+    /// `prepare` may still be installing assets. It is cancelled and then
+    /// `finish()` runs, which is safe to overlap it: `finish()` sets the flag the
+    /// service checks at each of `prepare`'s own checkpoints, so a late `prepare`
+    /// cannot register an analyzer. This deliberately does not wait for the
+    /// install itself, which would make Stop take as long as a 300 MB download.
+    ///
+    /// Draining the event task is what makes the caption rows complete when this
+    /// returns: `finish()` closes the event stream, so the loop consumes whatever
+    /// is still buffered and ends.
+    private func finishLiveTranscription() async {
+        guard let service = liveTranscription else { return }
+        liveTranscription = nil
+
+        prepareTask?.cancel()
+        prepareTask = nil
+
+        await service.finish()
+        await liveEventTask?.value
+        liveEventTask = nil
+    }
+
+    // MARK: - Post-processing
+
+    /// Re-runs whatever is left of the pipeline for a meeting whose audio was
+    /// kept. Does nothing for a meeting that already has notes, because its audio
+    /// has been deleted.
+    @discardableResult
+    func retryProcessing(meetingId: UUID) -> Task<Void, Never> {
+        Task { [weak self] in
+            guard let self,
+                  let meeting = self.store.fetch(id: meetingId),
+                  let directory = meeting.audioDirectory else { return }
+            let tracks = AudioSource.allCases
+                .map { directory.appendingPathComponent("\($0.fileBaseName).m4a") }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            await self.process(meetingId: meetingId, trackURLs: tracks)
+        }
+    }
+
+    private func process(meetingId: UUID, trackURLs: [URL]) async {
+        guard !isProcessing,
+              var meeting = store.fetch(id: meetingId),
+              let directory = meeting.audioDirectory else { return }
+        isProcessing = true
+        defer { isProcessing = false }
+
+        meeting.transcriptionError = nil
+        meeting.notesGenerationError = nil
+        store.save(meeting)
+
+        // The diarized pass is the one paid call per meeting, so a non-empty
+        // transcript means it already succeeded and must not be bought again.
+        // Live captions are never written here, which is what keeps that test
+        // unambiguous.
+        if meeting.transcript.isEmpty {
+            state = .transcribing
+            let existingTracks = trackURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !existingTracks.isEmpty else {
+                return fail(meeting: meeting, transcriptionError: "No audio was captured.")
             }
-            let notes = try await noteGeneration.generateNotes(transcript: validTranscript)
-            meeting.notes = notes
+            do {
+                let transcription = try await transcribe(tracks: existingTracks, in: directory)
+                guard !transcription.chunks.isEmpty else {
+                    return fail(
+                        meeting: meeting,
+                        transcriptionError: "The recording contained no recognisable speech."
+                    )
+                }
+                meeting.transcript = transcription.chunks
+                meeting.billedSeconds = transcription.billedSeconds
+                store.save(meeting)
+            } catch {
+                return fail(meeting: meeting, transcriptionError: error.localizedDescription)
+            }
+        }
+        visibleLiveTranscript = meeting.transcript
+
+        state = .generatingNotes
+        do {
+            meeting.notes = try await noteGeneration.generateNotes(transcript: meeting.transcript)
+            meeting.notesGenerationError = nil
             store.save(meeting)
-            state = .done(meetingId: id)
-            sendCompletionNotification()
         } catch {
             meeting.notesGenerationError = error.localizedDescription
             store.save(meeting)
             state = .failed(error.localizedDescription)
-            sendFailureNotification()
-        }
-    }
-
-    func retryNoteGeneration(meetingId: UUID) {
-        Task {
-            guard var meeting = store.fetch(id: meetingId) else { return }
-            let validTranscript = meeting.transcript.filter { !Self.isTranscriptionFailure($0.text) }
-            guard !validTranscript.isEmpty else { return }
-            meeting.notesGenerationError = nil
-            meeting.notes = nil
-            store.save(meeting)
-            do {
-                let notes = try await noteGeneration.generateNotes(transcript: validTranscript)
-                meeting.notes = notes
-                meeting.notesGenerationError = nil
-                store.save(meeting)
-                sendCompletionNotification()
-            } catch {
-                meeting.notesGenerationError = error.localizedDescription
-                store.save(meeting)
-                sendFailureNotification()
-            }
-        }
-    }
-
-    private func handleChunk(_ chunk: AudioChunk) async {
-        let partialToken = UUID()
-        defer {
-            pendingTranscriptionCount = max(0, pendingTranscriptionCount - 1)
-            try? FileManager.default.removeItem(at: chunk.url)
-            Task { await self.transcriptionSemaphore.signal() }
-        }
-        do {
-            // prompt: nil — rolling-transcript prompts caused transcription models
-            // to echo previous content into new chunks.
-            let transcriptChunk = try await transcription.transcribe(
-                audioURL: chunk.url,
-                timestamp: chunk.timestamp,
-                prompt: nil,
-                onPartialTranscript: { [weak self] partial in
-                    self?.updateLivePartialTranscript(partial, timestamp: chunk.timestamp, token: partialToken)
-                }
+            sendNotification(
+                title: "Processing failed",
+                body: "Your recording was saved. Open Notability to retry."
             )
-            guard !transcriptChunk.text.isEmpty, Self.isMeaningfulTranscript(transcriptChunk.text) else {
-                clearLivePartialTranscript(token: partialToken)
-                return
-            }
-            clearLivePartialTranscript(token: partialToken)
-            addTranscriptChunk(transcriptChunk)
-        } catch {
-            clearLivePartialTranscript(token: partialToken)
-            guard !Self.shouldDropTranscriptionError(error) else { return }
-            let errorChunk = TranscriptChunk(timestamp: chunk.timestamp, text: "[transcription failed: \(error.localizedDescription)]")
-            addTranscriptChunk(errorChunk)
-        }
-    }
-
-    private func addTranscriptChunk(_ chunk: TranscriptChunk) {
-        let entry: TranscriptMergeEntry = (row: chunk, lastSourceTimestamp: chunk.timestamp)
-        if let last = liveTranscriptRows.last, chunk.timestamp >= last.chunk.timestamp {
-            var rows = liveTranscriptRows
-            let mergedTail = Self.mergedTranscriptEntries(
-                from: [(row: last.chunk, lastSourceTimestamp: last.lastSourceTimestamp), entry]
-            )
-            if mergedTail.count == 1, let merged = mergedTail.first {
-                rows[rows.count - 1] = LiveTranscriptRow(
-                    chunk: merged.row,
-                    lastSourceTimestamp: merged.lastSourceTimestamp
-                )
-            } else {
-                rows.append(LiveTranscriptRow(chunk: chunk, lastSourceTimestamp: chunk.timestamp))
-            }
-            liveTranscriptRows = rows
-        } else {
-            let merged = Self.mergedTranscriptEntries(from: liveTranscriptMergeEntries + [entry])
-            liveTranscriptRows = merged.map {
-                LiveTranscriptRow(chunk: $0.row, lastSourceTimestamp: $0.lastSourceTimestamp)
-            }
-        }
-        updateVisibleLiveTranscript()
-        persistCurrentTranscriptSnapshot()
-    }
-
-    private func persistCurrentTranscriptSnapshot() {
-        guard let id = currentMeetingId else { return }
-        let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
-        store.persistTranscriptSnapshot(id: id, transcript: liveTranscript, durationSeconds: duration)
-    }
-
-    private func updateLivePartialTranscript(_ text: String, timestamp: TimeInterval, token: UUID) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, Self.isMeaningfulTranscript(trimmed) else { return }
-        // Realtime API streams cumulative deltas — many consecutive partials are
-        // identical strings. Skip redundant @Published writes to avoid pointless
-        // SwiftUI re-layout work on every websocket event.
-        if livePartialTranscriptToken == token,
-           livePartialTranscript?.text == trimmed,
-           livePartialTranscript?.timestamp == timestamp {
             return
         }
-        livePartialTranscriptToken = token
-        livePartialTranscript = TranscriptChunk(timestamp: timestamp, text: trimmed)
-        updateVisibleLiveTranscript()
-    }
 
-    private func clearLivePartialTranscript(token: UUID) {
-        if livePartialTranscriptToken == token {
-            livePartialTranscriptToken = nil
-            livePartialTranscript = nil
-            updateVisibleLiveTranscript()
-        }
-    }
+        // The audio has served its purpose only once notes exist. Deleting it
+        // any earlier would make a failure unrecoverable without re-recording
+        // the meeting.
+        try? FileManager.default.removeItem(at: directory)
+        meeting.audioDirectory = nil
+        store.save(meeting)
 
-    private func updateVisibleLiveTranscript() {
-        // Fast path: no partial means visibleLiveTranscript is exactly liveTranscript,
-        // which addTranscriptChunk has already merged. Avoid a second O(N) merge pass
-        // on every chunk add.
-        guard let partial = livePartialTranscript else {
-            visibleLiveTranscript = liveTranscript
-            return
-        }
-        let merged = Self.mergedTranscriptEntries(
-            from: liveTranscriptMergeEntries + [(row: partial, lastSourceTimestamp: partial.timestamp)]
-        )
-        visibleLiveTranscript = merged.map { $0.row }
-    }
-
-    private static func isTranscriptionFailure(_ text: String) -> Bool {
-        text.hasPrefix(transcriptionFailurePrefix)
-    }
-
-    private static func shouldDropTranscriptionError(_ error: Error) -> Bool {
-        guard let apiError = error as? TranscriptionService.APIError else { return false }
-        return apiError.isInvalidAudioFile
-    }
-
-    private var liveTranscriptMergeEntries: [TranscriptMergeEntry] {
-        liveTranscriptRows.map { (row: $0.chunk, lastSourceTimestamp: $0.lastSourceTimestamp) }
-    }
-
-    private static func mergedTranscriptEntries(from entries: [TranscriptMergeEntry]) -> [TranscriptMergeEntry] {
-        let sorted = entries.sorted { $0.row.timestamp < $1.row.timestamp }
-        var merged: [TranscriptMergeEntry] = []
-
-        for entry in sorted {
-            let text = entry.row.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let row = TranscriptChunk(timestamp: entry.row.timestamp, text: text)
-
-            if let last = merged.last,
-               !isTranscriptionFailure(last.row.text),
-               !isTranscriptionFailure(text),
-               row.timestamp - last.lastSourceTimestamp <= maxMergeTimestampGap,
-               let deduplicated = deduplicatedAdjacentTranscriptText(last.row.text, text) {
-                merged[merged.count - 1] = (
-                    row: TranscriptChunk(timestamp: last.row.timestamp, text: deduplicated),
-                    lastSourceTimestamp: entry.lastSourceTimestamp
-                )
-                continue
-            }
-
-            guard
-                let last = merged.last,
-                !isTranscriptionFailure(last.row.text),
-                !isTranscriptionFailure(text),
-                row.timestamp - last.lastSourceTimestamp <= maxMergeTimestampGap,
-                shouldMergeWithPreviousSentence(last.row.text)
-            else {
-                merged.append((row: row, lastSourceTimestamp: entry.lastSourceTimestamp))
-                continue
-            }
-
-            merged[merged.count - 1] = (
-                row: TranscriptChunk(
-                    timestamp: last.row.timestamp,
-                    text: joinedTranscriptText(last.row.text, text)
-                ),
-                lastSourceTimestamp: entry.lastSourceTimestamp
-            )
-        }
-
-        return merged
-    }
-
-    private static func shouldMergeWithPreviousSentence(_ text: String) -> Bool {
-        !endsWithSentenceTerminator(text)
-    }
-
-    private static func endsWithSentenceTerminator(_ text: String) -> Bool {
-        let closingCharacters = Set<Character>(["\"", "'", "”", "’", ")", "]", "}"])
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let lastMeaningful = trimmed.reversed().first(where: { !closingCharacters.contains($0) }) else {
-            return false
-        }
-        return [".", "?", "!", "。", "！", "？"].contains(lastMeaningful)
-    }
-
-    private static func joinedTranscriptText(_ left: String, _ right: String) -> String {
-        let trimmedLeft = left.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRight = right.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedLeft.isEmpty else { return trimmedRight }
-        guard !trimmedRight.isEmpty else { return trimmedLeft }
-        return "\(trimmedLeft) \(trimmedRight)"
-    }
-
-    private static func deduplicatedAdjacentTranscriptText(_ left: String, _ right: String) -> String? {
-        let trimmedLeft = left.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRight = right.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedLeft = normalizedForTranscriptComparison(trimmedLeft)
-        let normalizedRight = normalizedForTranscriptComparison(trimmedRight)
-        let minimumOverlapLength = 4
-
-        guard normalizedLeft.count >= minimumOverlapLength,
-              normalizedRight.count >= minimumOverlapLength else {
-            return nil
-        }
-
-        if normalizedLeft == normalizedRight || normalizedLeft.hasPrefix(normalizedRight) {
-            return trimmedLeft
-        }
-        if normalizedRight.hasPrefix(normalizedLeft) {
-            return trimmedRight
-        }
-        guard let overlapLength = longestSuffixPrefixOverlap(
-            left: normalizedLeft,
-            right: normalizedRight,
-            minimumLength: minimumOverlapLength
-        ) else {
-            return nil
-        }
-
-        let remainder = rightRemainderAfterNormalizedPrefix(trimmedRight, prefixLength: overlapLength)
-        guard !remainder.text.isEmpty else { return trimmedLeft }
-        let separator = remainder.continuesToken || remainder.text.first?.isPunctuation == true ? "" : " "
-        return "\(trimmedLeft)\(separator)\(remainder.text)"
-    }
-
-    private static func normalizedForTranscriptComparison(_ text: String) -> String {
-        text
-            .lowercased()
-            .filter { !$0.isWhitespace && !$0.isPunctuation }
-    }
-
-    private static func longestSuffixPrefixOverlap(
-        left: String,
-        right: String,
-        minimumLength: Int
-    ) -> Int? {
-        let maxLength = min(left.count, right.count)
-        guard maxLength >= minimumLength else { return nil }
-
-        for length in stride(from: maxLength, through: minimumLength, by: -1) {
-            if left.suffix(length) == right.prefix(length) {
-                return length
-            }
-        }
-        return nil
-    }
-
-    private static func rightRemainderAfterNormalizedPrefix(
-        _ text: String,
-        prefixLength: Int
-    ) -> (text: String, continuesToken: Bool) {
-        var remaining = prefixLength
-        var index = text.startIndex
-
-        while index < text.endIndex, remaining > 0 {
-            let character = text[index]
-            if !character.isWhitespace && !character.isPunctuation {
-                remaining -= 1
-            }
-            index = text.index(after: index)
-        }
-
-        let continuesToken: Bool
-        if index > text.startIndex, index < text.endIndex {
-            let previous = text[text.index(before: index)]
-            let current = text[index]
-            continuesToken = !previous.isWhitespace && !previous.isPunctuation && !current.isWhitespace && !current.isPunctuation
-        } else {
-            continuesToken = false
-        }
-
-        return (
-            text: text[index...].trimmingCharacters(in: .whitespacesAndNewlines),
-            continuesToken: continuesToken
+        state = .done(meetingId: meetingId)
+        sendNotification(
+            title: "Meeting notes ready",
+            body: "Your meeting notes have been generated."
         )
     }
 
-    private static func isMeaningfulTranscript(_ text: String) -> Bool {
-        let normalized = text
-            .filter { !$0.isWhitespace && !$0.isPunctuation }
-        guard !normalized.isEmpty else { return false }
-        if normalized.allSatisfy({ $0 == "아" }) {
-            return false
+    private func transcribe(tracks: [URL], in directory: URL) async throws -> DiarizedTranscription {
+        let mixedURL = directory.appendingPathComponent("mixed.m4a")
+        // Mixing and reference extraction decode and re-encode the whole
+        // recording. Off the main actor, because on a two-hour meeting that is
+        // long enough to freeze the window.
+        try await Task.detached(priority: .userInitiated) {
+            try AudioMixer.mix(tracks: tracks, to: mixedURL)
+        }.value
+
+        let micURL = directory.appendingPathComponent("\(AudioSource.microphone.fileBaseName).m4a")
+        let systemURL = directory
+            .appendingPathComponent("\(AudioSource.systemAudio.fileBaseName).m4a")
+        let hasSystemTrack = FileManager.default.fileExists(atPath: systemURL.path)
+        // A missing reference costs only speaker naming: the local user's turns
+        // still get separated, they just get a letter instead of a label.
+        let reference = await Task.detached(priority: .userInitiated) {
+            try? SpeakerReferenceExtractor.extract(
+                micURL: micURL,
+                systemURL: hasSystemTrack ? systemURL : nil
+            )
+        }.value
+
+        let language = ModelSettings.shared.transcriptionLanguage
+        return try await finalTranscription.transcribe(
+            audioURL: mixedURL,
+            speakerReference: reference,
+            language: language.isEmpty ? nil : language
+        )
+    }
+
+    private func fail(meeting: Meeting, transcriptionError: String) {
+        var updated = meeting
+        updated.transcriptionError = transcriptionError
+        store.save(updated)
+        state = .failed(transcriptionError)
+        sendNotification(
+            title: "Processing failed",
+            body: "Your recording was saved. Open Notability to retry."
+        )
+    }
+
+    private func sendNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
+
+    private enum CoordinatorError: Error, LocalizedError {
+        case alreadyRecording
+
+        var errorDescription: String? {
+            "A recording is already in progress."
         }
-        return true
-    }
-
-    private func sendCompletionNotification() {
-        let content = UNMutableNotificationContent()
-        content.title = "Meeting notes ready"
-        content.body = "Your meeting notes have been generated."
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-    }
-
-    private func sendFailureNotification() {
-        let content = UNMutableNotificationContent()
-        content.title = "Note generation failed"
-        content.body = "Your meeting was saved but notes could not be generated."
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
     }
 
     private enum CaptureAvailabilityError: Error, LocalizedError {
         case microphoneUnavailable
 
         var errorDescription: String? {
-            "Microphone capture is required so your voice is included in the transcript. Check your input device and Microphone privacy settings, then try again."
+            "Microphone capture is required so your voice is included in the transcript. "
+                + "Check your input device and Microphone privacy settings, then try again."
         }
     }
 }

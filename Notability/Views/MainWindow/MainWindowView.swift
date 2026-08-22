@@ -84,12 +84,12 @@ private struct LiveRecordingView: View {
             }
             Spacer()
             HStack(spacing: Spacing.sm) {
-                let validCount = coordinator.liveTranscript.filter { !isTranscriptionFailure($0.text) }.count
-                if validCount > 0 {
-                    Pill(text: "\(validCount) segment\(validCount == 1 ? "" : "s")", systemImage: "text.bubble", tint: BrandColor.accent)
+                let rowCount = coordinator.visibleLiveTranscript.count
+                if rowCount > 0 {
+                    Pill(text: "\(rowCount) segment\(rowCount == 1 ? "" : "s")", systemImage: "text.bubble", tint: BrandColor.accent)
                 }
-                if coordinator.pendingTranscriptionCount > 0 {
-                    Pill(text: "Transcribing", systemImage: "waveform", tint: BrandColor.accent)
+                if let notice = coordinator.liveCaptionNotice {
+                    Pill(text: notice, systemImage: "captions.bubble", tint: BrandColor.warning)
                 }
                 Button {
                     Task { await coordinator.stopRecording() }
@@ -142,27 +142,26 @@ private struct LiveRecordingView: View {
     private func transcriptArea(rows: [TranscriptChunk]) -> some View {
         if rows.isEmpty {
             BrandedEmptyState(
-                title: coordinator.pendingTranscriptionCount > 0 ? "Transcribing…" : "Listening…",
-                systemImage: coordinator.pendingTranscriptionCount > 0 ? "text.bubble" : "waveform",
-                message: coordinator.pendingTranscriptionCount > 0
-                    ? "Transcript will appear when the current audio chunk finishes."
-                    : "Start speaking and Notability will transcribe in real time."
+                title: "Listening…",
+                systemImage: "waveform",
+                message: coordinator.liveCaptionNotice
+                    ?? "Start speaking and Notability will caption in real time."
             )
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Spacing.sm) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, chunk in
-                            TranscriptRow(timestamp: chunk.timestamp, text: chunk.text, isFailure: isTranscriptionFailure(chunk.text))
+                            TranscriptRow(timestamp: chunk.timestamp, text: chunk.text)
                                 .id(index)
                         }
                     }
                     .padding(Spacing.lg)
                 }
-                .onChange(of: coordinator.liveTranscript.count) { _, _ in
+                .onChange(of: rows.count) { _, _ in
                     scrollToLast(proxy, total: rows.count)
                 }
-                .onChange(of: coordinator.livePartialTranscript?.text ?? "") { _, _ in
+                .onChange(of: rows.last?.text ?? "") { _, _ in
                     scrollToLast(proxy, total: rows.count)
                 }
             }
@@ -179,10 +178,6 @@ private struct LiveRecordingView: View {
 
     private func formatElapsed(_ t: TimeInterval) -> String {
         "\(Int(t) / 60):\(String(format: "%02d", Int(t) % 60))"
-    }
-
-    private func isTranscriptionFailure(_ text: String) -> Bool {
-        text.hasPrefix("[transcription failed")
     }
 }
 

@@ -86,6 +86,12 @@ final class ModelSettings: ObservableObject {
         }
     }
 
+    /// BCP-47 identifier handed to the on-device transcriber, which — unlike the
+    /// API — has no auto-detect mode and needs a concrete locale.
+    var effectiveTranscriptionLocaleIdentifier: String {
+        transcriptionLanguage.isEmpty ? Locale.current.identifier : transcriptionLanguage
+    }
+
     init(userDefaults: UserDefaults = .standard) {
         defaults = userDefaults
         transcriptionMethod = Self.savedTranscriptionMethod(in: userDefaults)

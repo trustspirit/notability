@@ -8,15 +8,9 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     private let storageDirectory: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    // Serializes all disk writes so background transcript-snapshot writes can
-    // never be reordered with foreground saves (which would let a stale snapshot
-    // overwrite a newer save). save() blocks on this queue; persistTranscriptSnapshot
-    // dispatches async.
+    // Serializes disk writes so two saves for the same meeting cannot interleave
+    // and leave a partially written file behind.
     private let diskWriteQueue = DispatchQueue(label: "com.notability.MeetingStore.disk", qos: .utility)
-    private var pendingTranscriptSnapshots: [UUID: Meeting] = [:]
-    private var transcriptSnapshotFlushScheduled = false
-    private var lastTranscriptSnapshotFlush = Date.distantPast
-    private let transcriptSnapshotMinimumWriteInterval: TimeInterval = 1.0
 
     init(storageDirectory: URL = MeetingStore.defaultDirectory) {
         self.storageDirectory = storageDirectory
@@ -61,25 +55,8 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
 
         let fileURL = storageDirectory.appendingPathComponent("\(meeting.id.uuidString).json")
         // sync: callers expect the meeting to be on disk when save() returns.
-        // Going through diskWriteQueue keeps write order consistent with any
-        // background snapshot writes already enqueued for the same file.
         diskWriteQueue.sync {
-            pendingTranscriptSnapshots.removeValue(forKey: meeting.id)
-            writeMeetingToDisk(meeting, fileURL: fileURL, logFailures: true)
-        }
-    }
-
-    func persistTranscriptSnapshot(id: UUID, transcript: [TranscriptChunk], durationSeconds: TimeInterval) {
-        guard let idx = allMeetings.firstIndex(where: { $0.id == id }) else { return }
-        // In-place mutation skips the filter+sort that save() does: transcript
-        // and duration changes don't affect the date-based ordering.
-        allMeetings[idx].transcript = transcript
-        allMeetings[idx].durationSeconds = durationSeconds
-        let snapshot = allMeetings[idx]
-        diskWriteQueue.async { [weak self] in
-            guard let self else { return }
-            self.pendingTranscriptSnapshots[id] = snapshot
-            self.scheduleTranscriptSnapshotFlushOnDiskQueue()
+            writeMeetingToDisk(meeting, fileURL: fileURL)
         }
     }
 
@@ -104,49 +81,17 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     func delete(id: UUID) {
         let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
         diskWriteQueue.sync {
-            pendingTranscriptSnapshots.removeValue(forKey: id)
             try? FileManager.default.removeItem(at: fileURL)
         }
         allMeetings.removeAll { $0.id == id }
     }
 
-    private func scheduleTranscriptSnapshotFlushOnDiskQueue() {
-        guard !transcriptSnapshotFlushScheduled else { return }
-        transcriptSnapshotFlushScheduled = true
-
-        let elapsed = Date().timeIntervalSince(lastTranscriptSnapshotFlush)
-        let delay = max(0, transcriptSnapshotMinimumWriteInterval - elapsed)
-        diskWriteQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.flushPendingTranscriptSnapshotsOnDiskQueue()
-        }
-    }
-
-    private func flushPendingTranscriptSnapshotsOnDiskQueue() {
-        transcriptSnapshotFlushScheduled = false
-        guard !pendingTranscriptSnapshots.isEmpty else { return }
-
-        let snapshots = pendingTranscriptSnapshots
-        pendingTranscriptSnapshots = [:]
-        lastTranscriptSnapshotFlush = Date()
-
-        for (id, snapshot) in snapshots {
-            let fileURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
-            writeMeetingToDisk(snapshot, fileURL: fileURL, logFailures: false)
-        }
-
-        if !pendingTranscriptSnapshots.isEmpty {
-            scheduleTranscriptSnapshotFlushOnDiskQueue()
-        }
-    }
-
-    private func writeMeetingToDisk(_ meeting: Meeting, fileURL: URL, logFailures: Bool) {
+    private func writeMeetingToDisk(_ meeting: Meeting, fileURL: URL) {
         do {
-            let data = try JSONEncoder().encode(meeting)
+            let data = try encoder.encode(meeting)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            if logFailures {
-                print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
-            }
+            print("[MeetingStore] Failed to persist meeting \(meeting.id): \(error)")
         }
     }
 
@@ -160,12 +105,19 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
             .compactMap { url in try? decoder.decode(Meeting.self, from: Data(contentsOf: url)) }
             .sorted { $0.date > $1.date }
 
-        // Meetings with no notes and no error were interrupted mid-processing (app crash/force-quit).
-        // Mark them failed so the UI shows an error state instead of an infinite spinner.
-        for i in meetings.indices where meetings[i].notes == nil && meetings[i].notesGenerationError == nil {
-            meetings[i].notesGenerationError = "Recording or note generation was interrupted. Any completed transcript segments were saved."
-            let fileURL = storageDirectory.appendingPathComponent("\(meetings[i].id.uuidString).json")
-            if let data = try? encoder.encode(meetings[i]) {
+        // A meeting with no notes and no recorded failure was interrupted
+        // mid-processing (crash or force-quit). Mark it so the UI shows an error
+        // state rather than an infinite spinner. The message goes in
+        // transcriptionError because that is the stage it died in, and because
+        // leaving notesGenerationError clear is what lets the UI offer a retry
+        // that redoes the transcription rather than notes over an empty
+        // transcript. A meeting that already carries either error is left alone.
+        for index in meetings.indices where Self.wasInterrupted(meetings[index]) {
+            meetings[index].transcriptionError = "Recording was interrupted before it "
+                + "could be transcribed. The captured audio was kept — use Retry to process it."
+            let fileURL = storageDirectory
+                .appendingPathComponent("\(meetings[index].id.uuidString).json")
+            if let data = try? encoder.encode(meetings[index]) {
                 try? data.write(to: fileURL, options: .atomic)
             }
         }
@@ -173,8 +125,25 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
         allMeetings = meetings
     }
 
+    private static func wasInterrupted(_ meeting: Meeting) -> Bool {
+        meeting.notes == nil
+            && meeting.notesGenerationError == nil
+            && meeting.transcriptionError == nil
+    }
+
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Notability/meetings")
     }
+
+    /// Session audio lives beside the meeting JSON, in its own subdirectory, and
+    /// is deleted once note generation succeeds.
+    static let defaultAudioDirectory: URL = {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Notability")
+            .appendingPathComponent("audio")
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }()
 }

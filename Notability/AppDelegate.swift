@@ -35,13 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store = MeetingStore()
         // Services read API key and model from Keychain/UserDefaults at each request —
         // no need to pass them at init or recreate on settings change
-        let capture = AudioCaptureService()
-        let transcription = TranscriptionService()
-        let noteGen = NoteGenerationService()
         coordinator = RecordingCoordinator(
-            audioCapture: capture,
-            transcription: transcription,
-            noteGeneration: noteGen,
+            audioCapture: AudioCaptureService(),
+            // A live transcription service is single use: its event stream ends
+            // when the recording does, so each recording needs a new one.
+            makeLiveTranscription: { LiveTranscriptionService() },
+            finalTranscription: DiarizedTranscriptionService(),
+            noteGeneration: NoteGenerationService(),
             store: store
         )
 
