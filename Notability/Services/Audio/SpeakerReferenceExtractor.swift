@@ -5,6 +5,13 @@ import AVFoundation
 /// diarization model labels the user's turns directly instead of assigning them
 /// an anonymous letter.
 ///
+/// Mic block *i* is compared against system block *i*, which is only a claim
+/// about the same instant because the capture layer writes both tracks against
+/// one origin — see `AudioMixer` for how that alignment is established. Reading
+/// the two tracks out of step would pick a reference from audio where the far
+/// end was in fact talking, and a contaminated reference gets the far end
+/// labelled as the local speaker for the whole meeting.
+///
 /// Both tracks are read in bounded chunks rather than decoded whole, and
 /// scanning stops the instant a qualifying window is found — a two-hour
 /// meeting where the user speaks alone in the first ten seconds never touches

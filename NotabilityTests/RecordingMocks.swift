@@ -127,6 +127,7 @@ final class FakeSessionAudioWriter: SessionAudioWriting, @unchecked Sendable {
 
     private struct State {
         var appendedFrameCounts: [AVAudioFrameCount] = []
+        var appendedStartTimes: [TimeInterval] = []
         var appendThreadIDs: [UInt64] = []
         var didFinish = false
         var writeError: Error?
@@ -137,6 +138,7 @@ final class FakeSessionAudioWriter: SessionAudioWriting, @unchecked Sendable {
     }
 
     var appendedFrameCounts: [AVAudioFrameCount] { state.withLock { $0.appendedFrameCounts } }
+    var appendedStartTimes: [TimeInterval] { state.withLock { $0.appendedStartTimes } }
     var appendThreadIDs: [UInt64] { state.withLock { $0.appendThreadIDs } }
     var didFinish: Bool { state.withLock { $0.didFinish } }
 
@@ -145,10 +147,11 @@ final class FakeSessionAudioWriter: SessionAudioWriting, @unchecked Sendable {
         set { state.withLock { $0.writeError = newValue } }
     }
 
-    func append(_ buffer: AVAudioPCMBuffer) {
+    func append(_ buffer: AVAudioPCMBuffer, startTime: TimeInterval) {
         let id = currentThreadID()
         state.withLock {
             $0.appendedFrameCounts.append(buffer.frameLength)
+            $0.appendedStartTimes.append(startTime)
             $0.appendThreadIDs.append(id)
         }
     }

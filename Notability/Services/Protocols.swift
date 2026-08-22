@@ -27,10 +27,20 @@ protocol AudioCaptureServiceProtocol {
     /// blocks delays the other source's capture callback, and a subscriber that
     /// reenters the capture service synchronously deadlocks.
     ///
-    /// Buffers are always in `captureFormat`, and each one's `startTime` is
-    /// derived from its own source's accumulated frame count. The two sources'
-    /// timelines are independent: they both start at zero and advance only with
-    /// the frames that source delivered.
+    /// Buffers are always in `captureFormat`, and every one's `startTime` is
+    /// measured from a single origin shared by both sources: the instant
+    /// `startCapture()` began attaching them. So equal `startTime`s mean the
+    /// same moment of the meeting whichever source they came from, which is
+    /// what makes the two recorded tracks alignable by sample index.
+    ///
+    /// Within a source, spacing comes from delivered frames rather than from
+    /// the clock, so a late callback does not shift the audio it carries. The
+    /// clock is consulted only where frames cannot answer: the first buffer of
+    /// each source, since the two sources start seconds apart, and the first
+    /// buffer after an interruption, since the frames that were never delivered
+    /// are a real gap. A `startTime` therefore need not equal the total frames
+    /// that source has delivered, and consumers that write these buffers to
+    /// disk must fill the difference rather than concatenate.
     var bufferPublisher: AnyPublisher<TaggedAudioBuffer, Never> { get }
 
     /// RMS amplitude, 0...1, of every published buffer, for the level meter.
@@ -78,8 +88,8 @@ protocol AudioCaptureServiceProtocol {
     /// 16 kHz mono Int16. Recording, live captions and mixing all assume it.
     var captureFormat: AVAudioFormat { get }
 
-    /// Starts from a clean slate: any previous capture is stopped and both
-    /// timelines restart at zero.
+    /// Starts from a clean slate: any previous capture is stopped and the
+    /// shared timeline restarts at zero.
     ///
     /// Succeeds with the microphone alone. It throws only when the microphone is
     /// unavailable, because a recording without the local user's voice is not

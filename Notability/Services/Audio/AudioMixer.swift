@@ -14,9 +14,14 @@ enum AudioMixerError: Error, LocalizedError {
     }
 }
 
-/// Sums capture tracks onto a single timeline. Both tracks start at the same
-/// instant and carry frame-derived timestamps, so aligning by sample index is
-/// sufficient — no drift correction is needed.
+/// Sums capture tracks onto a single timeline by sample index, with no drift
+/// correction.
+///
+/// That is sufficient because the capture layer has already done the aligning:
+/// every buffer is stamped against one origin shared by both sources, and
+/// `SessionRecorder` pads each track with silence up to its buffers' start
+/// times. So frame *n* of `mic.m4a` and frame *n* of `system.m4a` are the same
+/// instant of the meeting, however far apart the two sources started.
 ///
 /// Tracks are read and written in fixed-size chunks rather than decoded whole,
 /// so mixing a multi-hour meeting never holds a full track in memory.

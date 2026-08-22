@@ -37,7 +37,7 @@ final class CaptureBufferRouter: @unchecked Sendable {
     func route(_ tagged: TaggedAudioBuffer) {
         // The recorder first: it feeds the transcript the user is actually
         // billed for, so it should not queue behind the display-only tier.
-        recorders[tagged.source]?.append(tagged.buffer)
+        recorders[tagged.source]?.append(tagged.buffer, startTime: tagged.startTime)
         liveTranscription.append(tagged)
     }
 }

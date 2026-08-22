@@ -23,6 +23,8 @@ enum AudioSource: String, Codable, CaseIterable {
 struct TaggedAudioBuffer {
     let source: AudioSource
     let buffer: AVAudioPCMBuffer
-    /// Seconds from recording start, derived from accumulated frame count.
+    /// Seconds from the start of the recording, on the one timeline both
+    /// sources are stamped against; see `AudioCaptureServiceProtocol
+    /// .bufferPublisher` for what that does and does not promise.
     let startTime: TimeInterval
 }

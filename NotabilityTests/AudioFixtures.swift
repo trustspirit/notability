@@ -1,4 +1,27 @@
 import AVFoundation
+@testable import Notability
+
+/// Stands in for the monotonic clock `CaptureBufferRelay` derives its shared
+/// origin from, so a test can place a source's first buffer at an exact instant
+/// instead of waiting for real capture to deliver one.
+final class TestMonotonicClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds: TimeInterval = 0
+
+    var read: CaptureBufferRelay.MonotonicClock {
+        { [self] in lock.withLock { seconds } }
+    }
+
+    var now: TimeInterval { lock.withLock { seconds } }
+
+    func advance(by interval: TimeInterval) {
+        lock.withLock { seconds += interval }
+    }
+
+    func set(to instant: TimeInterval) {
+        lock.withLock { seconds = instant }
+    }
+}
 
 enum AudioFixtures {
     static let format = AVAudioFormat(

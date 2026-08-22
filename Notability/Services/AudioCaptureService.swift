@@ -165,6 +165,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         // outgoing converter or rebuilds; both are safe, because the converter
         // locks its own state and rebuilds whenever the input format changes.
         microphoneConverter.reset()
+        // Restarting the engine costs however long the switch takes, and those
+        // frames are never delivered. Counting frames alone would splice the
+        // gap shut and slide the rest of the microphone track ahead of system
+        // audio, which kept recording throughout.
+        relay.resynchronize(.microphone)
 
         let input = engine.inputNode
         installMicrophoneTap(on: input)

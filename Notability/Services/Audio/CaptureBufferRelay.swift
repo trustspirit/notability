@@ -2,8 +2,8 @@ import AVFoundation
 import Combine
 import os
 
-/// Stamps captured buffers with a frame-derived start time and fans them out to
-/// subscribers.
+/// Stamps captured buffers with a start time on a timeline shared by both
+/// sources and fans them out to subscribers.
 ///
 /// Two realtime callers share this: the audio engine's microphone tap thread and
 /// ScreenCaptureKit's sample queue. One lock covers everything they share — the
@@ -30,24 +30,69 @@ import os
 /// one sending thread, and stamping and publishing happen in the same call.
 /// Order between sources is not preserved and does not need to be — the two
 /// tracks are aligned downstream by their timestamps.
+///
+/// ## The shared origin
+///
+/// Frame counts alone cannot align the two sources. They start at different
+/// moments — the microphone is running long before `SCShareableContent` and
+/// `SCStream.startCapture()` have finished, which is hundreds of milliseconds
+/// on a good day and seconds the first time permission is granted — so frame
+/// *n* of one source is not the same instant as frame *n* of the other.
+///
+/// So `open()` records a monotonic reading, and a source's first buffer seeds
+/// that source's clock with however much of that reading had already elapsed.
+/// From then on the clock advances by delivered frames only, which is what
+/// keeps spacing immune to a late callback. The result is that both sources'
+/// `startTime`s measure from the same instant, which is what lets
+/// `SessionRecorder` write index-aligned files and what `AudioMixer` and
+/// `SpeakerReferenceExtractor` assume.
+///
+/// `resynchronize(_:)` re-arms that seeding for one source, for the case where
+/// capture was interrupted mid-recording: the frames a restarting engine never
+/// delivered are a real hole in the timeline, and counting frames would close
+/// the hole up and slide the rest of that track earlier.
 final class CaptureBufferRelay: @unchecked Sendable {
     let sampleRate: Double
 
-    private struct State {
-        var isOpen = false
-        var microphoneClock: FrameClock
-        var systemAudioClock: FrameClock
+    /// Reads a monotonic clock, in seconds from an arbitrary fixed point.
+    ///
+    /// Injectable so the origin can be driven to an exact instant in tests;
+    /// nothing about the timeline is observable otherwise, because it depends
+    /// on when hardware happens to deliver.
+    typealias MonotonicClock = @Sendable () -> TimeInterval
+
+    /// `systemUptime` is `mach_absolute_time` in seconds: monotonic, immune to
+    /// the wall clock being set, and paused while the machine is asleep — which
+    /// is what we want, because capture is suspended for exactly that interval
+    /// and the padding would otherwise cover a sleep the audio never spanned.
+    static let systemUptimeClock: MonotonicClock = { ProcessInfo.processInfo.systemUptime }
+
+    private struct SourceState {
+        var clock: FrameClock
+        /// Set at `open()` and by `resynchronize(_:)`; cleared by the next
+        /// buffer, which is the one that establishes where on the shared
+        /// timeline this source's audio resumes.
+        var needsOrigin = true
     }
 
+    private struct State {
+        var isOpen = false
+        var openedAt: TimeInterval = 0
+        var microphone: SourceState
+        var systemAudio: SourceState
+    }
+
+    private let clock: MonotonicClock
     private let state: OSAllocatedUnfairLock<State>
     private let buffers = PassthroughSubject<TaggedAudioBuffer, Never>()
     private let levels = PassthroughSubject<Float, Never>()
 
-    init(sampleRate: Double) {
+    init(sampleRate: Double, clock: @escaping MonotonicClock = CaptureBufferRelay.systemUptimeClock) {
         self.sampleRate = sampleRate
+        self.clock = clock
         state = OSAllocatedUnfairLock(uncheckedState: State(
-            microphoneClock: FrameClock(sampleRate: sampleRate),
-            systemAudioClock: FrameClock(sampleRate: sampleRate)
+            microphone: SourceState(clock: FrameClock(sampleRate: sampleRate)),
+            systemAudio: SourceState(clock: FrameClock(sampleRate: sampleRate))
         ))
     }
 
@@ -66,13 +111,15 @@ final class CaptureBufferRelay: @unchecked Sendable {
         state.withLockUnchecked { $0.isOpen }
     }
 
-    /// Starts accepting buffers, with both clocks back at zero so timestamps are
-    /// relative to this recording.
+    /// Starts accepting buffers, with both clocks back at zero and this instant
+    /// as the origin both of them are stamped against.
     func open() {
+        let now = clock()
         state.withLockUnchecked { state in
             state.isOpen = true
-            state.microphoneClock = FrameClock(sampleRate: sampleRate)
-            state.systemAudioClock = FrameClock(sampleRate: sampleRate)
+            state.openedAt = now
+            state.microphone = SourceState(clock: FrameClock(sampleRate: sampleRate))
+            state.systemAudio = SourceState(clock: FrameClock(sampleRate: sampleRate))
         }
     }
 
@@ -80,6 +127,22 @@ final class CaptureBufferRelay: @unchecked Sendable {
     /// subscriber, including from a callback that was already under way.
     func close() {
         state.withLockUnchecked { $0.isOpen = false }
+    }
+
+    /// Declares that `source` stopped delivering and is about to resume, so its
+    /// next buffer should be placed where the shared clock says it is rather
+    /// than immediately after the last one.
+    ///
+    /// Without this, an audio engine restarting for a device change would have
+    /// its silent interval erased from the track, sliding everything after it
+    /// earlier and out of step with the source that kept running.
+    func resynchronize(_ source: AudioSource) {
+        state.withLockUnchecked { state in
+            switch source {
+            case .microphone: state.microphone.needsOrigin = true
+            case .systemAudio: state.systemAudio.needsOrigin = true
+            }
+        }
     }
 
     /// Publishes `buffer` as coming from `source`.
@@ -95,19 +158,42 @@ final class CaptureBufferRelay: @unchecked Sendable {
         // Computed before the lock to keep the critical section to a clock
         // update and two sends.
         let level = Self.rms(of: buffer)
+        let now = clock()
 
         state.withLockUnchecked { state in
             guard state.isOpen else { return }
+            let elapsed = now - state.openedAt
             let startTime: TimeInterval
             switch source {
             case .microphone:
-                startTime = state.microphoneClock.advance(by: buffer.frameLength)
+                startTime = Self.stamp(&state.microphone, buffer.frameLength, elapsed, sampleRate)
             case .systemAudio:
-                startTime = state.systemAudioClock.advance(by: buffer.frameLength)
+                startTime = Self.stamp(&state.systemAudio, buffer.frameLength, elapsed, sampleRate)
             }
             buffers.send(TaggedAudioBuffer(source: source, buffer: buffer, startTime: startTime))
             levels.send(level)
         }
+    }
+
+    /// Returns the buffer's start time on the shared timeline, seeding the
+    /// source's origin first if this is the buffer that resumes it.
+    private static func stamp(
+        _ source: inout SourceState,
+        _ frameCount: AVAudioFrameCount,
+        _ elapsedSinceOpen: TimeInterval,
+        _ sampleRate: Double
+    ) -> TimeInterval {
+        if source.needsOrigin {
+            source.needsOrigin = false
+            // A capture callback runs once its buffer is full, so the audio in
+            // it ends around now and started one buffer's worth earlier.
+            // Charging each source only for its own delivery latency is what
+            // stops two sources with different buffer sizes from landing a
+            // buffer apart.
+            let begunAt = elapsedSinceOpen - Double(frameCount) / sampleRate
+            source.clock.skip(toFrame: AVAudioFramePosition((begunAt * sampleRate).rounded()))
+        }
+        return source.clock.advance(by: frameCount)
     }
 
     private static func rms(of buffer: AVAudioPCMBuffer) -> Float {

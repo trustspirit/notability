@@ -114,6 +114,168 @@ final class CaptureBufferRelayTests: XCTestCase {
         XCTAssertEqual(collector.startTimes(of: .systemAudio), [0, 0])
     }
 
+    // MARK: - Shared origin
+
+    /// The defect this pins: system audio attaches seconds after the
+    /// microphone, because `SCShareableContent` and `SCStream.startCapture()`
+    /// both take their time. Stamping each source from its own frame zero made
+    /// those two frame zeros the same index but different instants, and every
+    /// consumer downstream aligns by index.
+    func test_a_source_that_starts_late_is_stamped_from_the_shared_origin() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        // The microphone is attached first and delivers its first 0.1 s buffer
+        // 0.1 s later, so it begins at the origin.
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        // System audio only arrives three seconds in.
+        clock.advance(by: 3.0)
+        sut.send(tenth(), from: .systemAudio)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0])
+        XCTAssertEqual(collector.startTimes(of: .systemAudio), [3.0])
+    }
+
+    /// The two tracks stay a fixed distance apart afterwards: seeding is a
+    /// one-off, and spacing within a source still comes from its frames.
+    func test_the_offset_between_two_late_starting_sources_stays_constant() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        clock.advance(by: 3.0)
+        sut.send(tenth(), from: .systemAudio)
+        for _ in 0..<3 {
+            clock.advance(by: 0.1)
+            sut.send(tenth(), from: .microphone)
+            sut.send(tenth(), from: .systemAudio)
+        }
+
+        let mic = collector.startTimes(of: .microphone)
+        let system = collector.startTimes(of: .systemAudio)
+        XCTAssertEqual(mic, [0, 0.1, 0.2, 0.3])
+        XCTAssertEqual(system, [3.0, 3.1, 3.2, 3.3])
+        for (micTime, systemTime) in zip(mic, system) {
+            XCTAssertEqual(systemTime - micTime, 3.0, accuracy: 1e-9)
+        }
+    }
+
+    /// Once a source has its origin, a stalled callback must not move its
+    /// audio: the frames arrived late but they were recorded on time.
+    func test_a_delayed_callback_does_not_shift_the_audio_it_carries() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        // Two buffers' worth of audio delivered in one late burst.
+        clock.advance(by: 5.0)
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .microphone)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1, 0.2])
+    }
+
+    // MARK: - Resynchronizing after an interruption
+
+    /// An input-device switch restarts the engine, and the microphone delivers
+    /// nothing while it does. Counting frames would splice that interval out of
+    /// `mic.m4a` and slide everything after it ahead of system audio, which
+    /// kept recording — and the error compounds with every switch.
+    func test_a_source_resumes_where_the_clock_says_after_an_interruption() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+
+        // Two seconds pass with the engine down, then the tap comes back.
+        sut.resynchronize(.microphone)
+        clock.advance(by: 2.0)
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1, 2.2, 2.3])
+    }
+
+    /// Resynchronizing must not be able to rewind a source. A timestamp that
+    /// repeated or went backwards is `audioDisordered`, which costs that source
+    /// its captions for the rest of the recording.
+    func test_resynchronizing_never_moves_a_timeline_backwards() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        // A source that has delivered more audio than the clock has counted —
+        // which is what a burst of buffers after a slow start looks like.
+        clock.advance(by: 0.1)
+        for _ in 0..<10 { sut.send(tenth(), from: .microphone) }
+
+        sut.resynchronize(.microphone)
+        sut.send(tenth(), from: .microphone)
+
+        let times = collector.startTimes(of: .microphone)
+        XCTAssertEqual(times.last, 1.0)
+        XCTAssertEqual(times, times.sorted())
+        XCTAssertEqual(Set(times).count, times.count, "a timestamp was reused")
+    }
+
+    /// Each source is resynchronized on its own; the other's timeline is
+    /// untouched, because only one of them was interrupted.
+    func test_resynchronizing_one_source_leaves_the_other_alone() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+
+        sut.resynchronize(.microphone)
+        clock.advance(by: 2.1)
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 2.1])
+        XCTAssertEqual(collector.startTimes(of: .systemAudio), [0, 0.1])
+    }
+
+    func test_open_moves_the_shared_origin_to_the_new_recording() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+
+        sut.open()
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+        sut.close()
+
+        // An hour of the app sitting idle between recordings must not become an
+        // hour of leading silence in the next one's tracks.
+        clock.advance(by: 3_600)
+        sut.open()
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0])
+    }
+
     // MARK: - Publisher lifetime
 
     func test_buffer_publisher_never_completes_and_survives_repeated_recordings() {
