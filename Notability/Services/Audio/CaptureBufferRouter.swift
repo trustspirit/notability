@@ -16,9 +16,12 @@ import AVFoundation
 ///
 /// `route` runs inside `CaptureBufferRelay`'s critical section, which is why it
 /// must neither block nor call back into the capture service — see
-/// `AudioCaptureServiceProtocol.bufferPublisher`. Both calls it makes are
-/// non-blocking handoffs: the recorder enqueues onto its own serial queue, and
-/// live transcription yields into an `AsyncStream`.
+/// `AudioCaptureServiceProtocol.bufferPublisher`. Neither call it makes can
+/// block: the recorder enqueues onto its own serial queue, and live
+/// transcription resamples and yields into an unbounded `AsyncStream`, which
+/// never suspends. The resample allocates a buffer and takes two uncontended
+/// locks, so this is cheap rather than free — anything added here has to stay
+/// within a tap callback's budget.
 final class CaptureBufferRouter: @unchecked Sendable {
     private let recorders: [AudioSource: SessionAudioWriting]
     private let liveTranscription: LiveTranscriptionServiceProtocol

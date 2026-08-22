@@ -38,8 +38,10 @@ final class LiveTranscriptionService: LiveTranscriptionServiceProtocol {
         var escaped: AsyncStream<LiveTranscriptionEvent>.Continuation!
         // Captions are worth bounding: volatile results arrive several times a
         // second per source, and an unbounded stream behind a slow consumer
-        // grows for the whole meeting. Dropping the oldest costs a caption line
-        // the user has already scrolled past, and never costs transcript text.
+        // grows for the whole meeting. Overflowing 512 needs a main-actor stall
+        // of minutes; if it happened, the dropped element is the next line the
+        // user would have seen, and a dropped `.finalized` loses that row for
+        // good. It never costs transcript text — that comes from the recording.
         events = AsyncStream(bufferingPolicy: .bufferingNewest(512)) { escaped = $0 }
         continuation = escaped
     }

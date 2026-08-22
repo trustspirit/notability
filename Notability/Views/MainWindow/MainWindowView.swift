@@ -153,10 +153,14 @@ private struct LiveRecordingView: View {
         if !coordinator.systemAudioAvailable {
             WarningBanner(
                 title: "System audio unavailable",
-                message: "Only your microphone is being captured. Grant Screen Recording in System Settings for full meeting transcription.",
+                message: "Only your microphone is being captured. Screen Recording access is needed to hear the other participants, and Notability has to restart before macOS will grant it.",
                 systemImage: "speaker.slash.fill",
-                action: ("Open Settings", {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                // Routed through the alert rather than opening Settings directly:
+                // ScreenCaptureKit does not pick up newly granted access in a
+                // running process, so opening Settings alone leaves the user
+                // having granted permission and still recording microphone only.
+                action: ("Fix Permission", {
+                    (NSApp.delegate as? AppDelegate)?.showRecordingPermissionAlert()
                 })
             )
             .padding(.horizontal, Spacing.lg)

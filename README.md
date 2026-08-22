@@ -40,9 +40,10 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 2. Enter your OpenAI API Key and click Save
 3. Allow **Microphone** access when macOS asks — your own voice is part of every recording, so
    Notability will not record without it
-4. Start a recording. Screen Recording access is only checked at that point; if it is missing,
-   Notability offers to open System Settings and relaunch. Enable Notability under
-   Privacy & Security → Screen Recording
+4. Start a recording. Screen Recording access is never checked up front, because macOS reports
+   it unreliably for ad-hoc builds. If it is missing, the recording view says so and offers
+   **Fix Permission**, which walks you through Privacy & Security → Screen Recording and
+   relaunches — the relaunch is required, since macOS will not grant access to a running process
 5. Without Screen Recording, recording still works — it just captures your microphone alone
 
 > **Note:** The first recording in a given language downloads Apple's on-device speech model,
@@ -54,9 +55,10 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 | Action | Description |
 |--------|-------------|
 | Click 🎙 → Start Recording | Start capturing meeting audio |
-| Click the red ⏺ icon | Stop recording and generate notes |
-| ⏳ icon | AI is generating your notes |
+| Red icon with elapsed time | Recording. Click it → Stop Recording to finish and generate notes |
+| ⏳ icon | Transcribing, then generating notes. Clicking does nothing until it is done |
 | Completion notification | Click to view the finished notes |
+| Click the icon after it finishes | Opens the notes window |
 
 > **Note:** The final transcript is one upload, which caps a meeting at roughly 2 hours 20
 > minutes. Longer recordings fail with a "too long" message and are kept on disk.

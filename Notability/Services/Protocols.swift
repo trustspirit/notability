@@ -85,12 +85,16 @@ protocol AudioCaptureServiceProtocol {
     ///
     /// `startCapture()` succeeds either way, because a recording without echo
     /// cancellation is still worth having. False means meeting audio coming back
-    /// through the speakers is also in the microphone track, so the far end gets
-    /// transcribed and billed twice — worth telling the user about. Reflects the
-    /// attempt made when capture started.
+    /// through the speakers is also in the microphone track, so the mix carries
+    /// the far end twice. Cost is unaffected — the mix is one upload whose length
+    /// is the wall clock — but the duplicate can be transcribed twice and
+    /// attributed to the local speaker, whose voice the speaker reference has
+    /// already named. Reflects the attempt made when capture started.
     var isEchoCancellationEnabled: Bool { get }
 
-    /// 16 kHz mono Int16. Recording, live captions and mixing all assume it.
+    /// 16 kHz mono Int16. Recording is written at this rate; live captions and
+    /// mixing resample away from it, so they depend on it being reported
+    /// accurately rather than on the value itself.
     var captureFormat: AVAudioFormat { get }
 
     /// Starts from a clean slate: any previous capture is stopped and the

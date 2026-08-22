@@ -588,8 +588,9 @@ final class RecordingCoordinatorTests: XCTestCase {
 
         try await env.sut.startRecording()
 
-        // Without it the far end is in both tracks, so it gets transcribed and
-        // billed twice — the user needs to be able to see that.
+        // Without it the far end lands in both tracks, so the mix can transcribe
+        // it twice and credit the second copy to the local speaker — the user
+        // needs to be able to see that before trusting the speaker labels.
         XCTAssertFalse(env.sut.echoCancellationEnabled)
     }
 

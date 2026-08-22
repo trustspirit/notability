@@ -52,8 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestNotificationPermission()
         observeCoordinatorState()
         // Request mic permission silently on first launch (system dialog, non-blocking).
-        // Screen Recording is checked lazily — only when recording fails — to avoid
-        // false positives from CGPreflightScreenCaptureAccess on ad-hoc builds.
+        // Screen Recording is never preflighted: CGPreflightScreenCaptureAccess
+        // reports false positives on ad-hoc builds. Recording succeeds with the
+        // microphone alone instead, and the recording view offers the fix.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             checkMicrophonePermission()
         }

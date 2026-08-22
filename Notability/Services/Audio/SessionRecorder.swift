@@ -35,6 +35,11 @@ final class SessionRecorder: SessionAudioWriting {
     /// generation succeeds so a failed run can be retried; without surfacing write
     /// failures the file would be silently truncated and downstream transcription
     /// would produce an incomplete transcript with no indication to retry.
+    ///
+    /// Only valid once `finish()` has returned. It is written on the writer queue
+    /// and this accessor is unsynchronized, so reading it mid-recording races that
+    /// thread; `finish()` drains the queue, which is what makes the read safe.
+    /// Surfacing failures during a recording would need a lock, not just a read.
     private(set) var writeError: Error?
 
     private var file: AVAudioFile?
