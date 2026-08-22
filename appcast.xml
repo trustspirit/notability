@@ -7,14 +7,20 @@
     <link>https://github.com/trustspirit/notability</link>
     <language>en</language>
     <item>
-      <title>Version 1.5.0</title>
-      <pubDate>Sun, 14 Jun 2026 12:32:33 +0000</pubDate>
-      <sparkle:version>120</sparkle:version>
-      <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
+      <title>Version 2.0.0</title>
+      <pubDate>Sat, 22 Aug 2026 06:30:23 +0000</pubDate>
+      <sparkle:version>156</sparkle:version>
+      <sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
+      <!-- Without this Sparkle offers the update to every existing
+           user, including those below the deployment target, who then
+           install a build macOS refuses to launch. Since the feed
+           carries only the newest item, filtered-out users are told
+           they are up to date, which is the intended dead end. -->
+      <sparkle:minimumSystemVersion>26.0.0</sparkle:minimumSystemVersion>
       <enclosure
-          url="https://github.com/trustspirit/notability/releases/download/v1.5.0/Notability.zip"
-          sparkle:edSignature="694Lp+g1hC4hpLv0qAYjYlQkcJPQsHLofmdIGmljdwBRpMzuHnmRXz9gd5Smrmt+zQmxgOnN4NwCKaedwn5OAQ=="
-          length="2624896"
+          url="https://github.com/trustspirit/notability/releases/download/v2.0.0/Notability.zip"
+          sparkle:edSignature="rHeiZBsfYfPW2G8J8aAPvjxdOsyWbf18eM0wcrYBEF8cLevTzBYQwSafamSnXHK0CMXWjvvJ+px7X/TzC1A2BA=="
+          length="2709945"
           type="application/octet-stream"/>
     </item>
   </channel>
