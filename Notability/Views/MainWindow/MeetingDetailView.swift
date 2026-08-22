@@ -83,12 +83,20 @@ struct MeetingDetailView: View {
                         Label("Billed \(formatDuration(Double(billed)))", systemImage: "creditcard")
                             .help("Audio billed by the transcription API for this meeting. Live captions during the meeting were free.")
                     }
-                    if meeting.notes == nil && meeting.notesGenerationError == nil {
-                        Pill(text: "Generating", systemImage: "sparkles", tint: BrandColor.warning)
-                    } else if meeting.notesGenerationError != nil {
-                        Pill(text: "Failed", systemImage: "exclamationmark.triangle.fill", tint: BrandColor.warning)
-                    } else {
+                    // Ordered to match the content area below, and checked
+                    // against both error fields: a meeting whose transcription
+                    // failed is not generating anything, which is what this used
+                    // to claim while the pane underneath said it had failed.
+                    if meeting.notes != nil {
                         Pill(text: "Notes ready", systemImage: "checkmark.circle.fill", tint: BrandColor.success)
+                    } else if meeting.hasProcessingFailure {
+                        Pill(
+                            text: meeting.processingWasInterrupted ? "Incomplete" : "Failed",
+                            systemImage: "exclamationmark.triangle.fill",
+                            tint: BrandColor.warning
+                        )
+                    } else {
+                        Pill(text: "Generating", systemImage: "sparkles", tint: BrandColor.warning)
                     }
                 }
                 .font(.caption)
@@ -178,15 +186,22 @@ struct MeetingDetailView: View {
         } else if let error = meeting.transcriptionError {
             // Checked before notesGenerationError because transcription runs
             // first: if it failed there are no notes to have failed at.
+            //
+            // A stage that never started did not fail, and the message below
+            // says as much, so the heading has to agree with it.
             BrandedEmptyState(
-                title: "Transcription failed",
+                title: meeting.processingWasInterrupted
+                    ? "Transcription didn't run"
+                    : "Transcription failed",
                 systemImage: "exclamationmark.triangle.fill",
                 message: error,
                 action: retryAction
             )
         } else if let error = meeting.notesGenerationError {
             BrandedEmptyState(
-                title: "Note generation failed",
+                title: meeting.processingWasInterrupted
+                    ? "Notes weren't generated"
+                    : "Note generation failed",
                 systemImage: "exclamationmark.triangle.fill",
                 message: error,
                 action: retryAction
@@ -200,10 +215,11 @@ struct MeetingDetailView: View {
         }
     }
 
-    /// Retrying re-reads the recorded audio, so it is only offered while that
-    /// audio is still on disk. It is deleted once notes exist.
+    /// Only offered when a retry has something to do that can still succeed, so
+    /// that the message above it never asks for one the meeting cannot run. See
+    /// `Meeting.canRetryProcessing`.
     private var retryAction: (String, () -> Void)? {
-        guard meeting.audioDirectory != nil else { return nil }
+        guard meeting.canRetryProcessing else { return nil }
         return ("Retry", { coordinator.retryProcessing(meetingId: meeting.id) })
     }
 

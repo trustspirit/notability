@@ -91,8 +91,10 @@ open Notability.xcodeproj
 - Live captions are produced entirely on your Mac. No audio is sent anywhere for them.
 - The recording is uploaded to the OpenAI API once, after the meeting ends, for the final
   transcript; the transcript is then sent for note generation (subject to OpenAI's Privacy Policy).
-- The recording is deleted from disk as soon as notes are generated successfully. It is kept only
-  when something failed and you may want to retry.
+- The recording is deleted from disk as soon as notes are generated successfully, and when you
+  delete the meeting. It is kept only while a meeting still needs it — because a stage failed, or
+  because quitting or a crash stopped one before it finished — so you can retry without
+  re-recording. A launch that finds recorded audio no meeting needs any more deletes it.
 - Meeting notes and transcripts are stored locally on your device only.
 - Your API key is stored with owner-only file permissions in
   `~/Library/Application Support/Notability/credentials` rather than the Keychain, because ad-hoc

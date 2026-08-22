@@ -7,6 +7,11 @@ protocol MeetingStoreProtocol {
     var allMeetingsPublisher: AnyPublisher<[Meeting], Never> { get }
     func save(_ meeting: Meeting)
     func fetch(id: UUID) -> Meeting?
+    /// Read-modify-write against the stored copy. Anything that mutates a
+    /// meeting across a suspension point has to go through this rather than
+    /// saving what it read; see the implementation for what that costs when it
+    /// does not.
+    func update(id: UUID, _ transform: (inout Meeting) -> Void)
     func delete(id: UUID)
 }
 

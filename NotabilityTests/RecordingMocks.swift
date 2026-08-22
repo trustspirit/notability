@@ -161,8 +161,43 @@ final class FakeSessionAudioWriter: SessionAudioWriting, @unchecked Sendable {
     }
 }
 
+/// Holds a mock service inside its call until a test lets it go.
+///
+/// The only way to observe what the pipeline does with a meeting it snapshotted
+/// is to act on the store while the pipeline is suspended in one of its awaits,
+/// which means suspending it somewhere a test controls.
+final class CallGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stream: AsyncStream<Void>?
+    private var continuation: AsyncStream<Void>.Continuation?
+
+    /// Called on the suspending thread once the gate has been reached, so a test
+    /// can wait for the suspension instead of guessing when it happens.
+    var onEntered: (() -> Void)?
+
+    func arm() {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        lock.withLock {
+            self.stream = stream
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        lock.withLock { continuation }?.finish()
+    }
+
+    /// Suspends until `release()`, or returns immediately if never armed.
+    func wait() async {
+        guard let stream = lock.withLock({ stream }) else { return }
+        onEntered?()
+        for await _ in stream {}
+    }
+}
+
 final class MockFinalTranscriptionService: FinalTranscriptionServiceProtocol, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: State())
+    let gate = CallGate()
 
     private struct State {
         var result = DiarizedTranscription(chunks: [], billedSeconds: nil)
@@ -194,6 +229,7 @@ final class MockFinalTranscriptionService: FinalTranscriptionServiceProtocol, @u
             $0.receivedSpeakerReferences.append(speakerReference)
             return ($0.result, $0.error)
         }
+        await gate.wait()
         if let error = outcome.error { throw error }
         return outcome.result
     }
@@ -201,6 +237,7 @@ final class MockFinalTranscriptionService: FinalTranscriptionServiceProtocol, @u
 
 final class MockNoteGenerationService: NoteGenerationServiceProtocol, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: State())
+    let gate = CallGate()
 
     private struct State {
         var error: Error?
@@ -222,6 +259,7 @@ final class MockNoteGenerationService: NoteGenerationServiceProtocol, @unchecked
             $0.receivedTranscripts.append(transcript)
             return $0.error
         }
+        await gate.wait()
         if let error { throw error }
         return MeetingNotes(summary: "Mock summary", actionItems: [], keyDecisions: [])
     }

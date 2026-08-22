@@ -604,6 +604,256 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(env.sut.state, .idle)
     }
 
+    /// Nothing will ever read this audio again and no meeting record is left
+    /// pointing at it, so it has to go on the way out.
+    func test_deleting_the_meeting_mid_recording_reclaims_its_audio() async throws {
+        let env = makeSUT()
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        let directory = env.audioRoot.appendingPathComponent(meetingId.uuidString)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+
+        env.store.delete(id: meetingId)
+        await env.sut.stopRecording()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(env.final.callCount, 0)
+    }
+
+    // MARK: - Quitting
+
+    /// The audio files are only decodable once they are closed, and closing them
+    /// is the whole reason this path exists rather than just terminating.
+    func test_saving_the_recording_for_later_leaves_readable_audio_and_no_charge() async throws {
+        let env = makeSUT()
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+
+        await env.sut.saveRecordingForLater()
+
+        XCTAssertEqual(env.final.callCount, 0, "Quitting must not start the paid pass")
+        XCTAssertEqual(env.notes.callCount, 0)
+        XCTAssertEqual(env.sut.state, .idle)
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        let directory = try XCTUnwrap(meeting.audioDirectory)
+        XCTAssertTrue(
+            RecordedSessionAudio.isUsable(directory: directory),
+            "The message says the audio can be read, so it has to be"
+        )
+        XCTAssertEqual(meeting.transcriptionError, ProcessingStatusMessage.quitDuringRecording)
+        XCTAssertTrue(meeting.canRetryProcessing)
+        XCTAssertGreaterThan(meeting.durationSeconds, 0)
+        XCTAssertTrue(
+            meeting.processingWasInterrupted,
+            "Transcription never started, so the detail view must not head this \"failed\""
+        )
+    }
+
+    /// The message the user reads after quitting promises a Retry that
+    /// transcribes and generates notes. This is that promise being kept.
+    func test_a_recording_saved_at_quit_can_be_processed_on_the_next_launch() async throws {
+        let env = makeSUT()
+        env.final.result = DiarizedTranscription(
+            chunks: [TranscriptChunk(timestamp: 0, text: "다시 처리됨", speaker: "나")],
+            billedSeconds: 12
+        )
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        await env.sut.saveRecordingForLater()
+
+        // A fresh store is what the next launch sees, and it must not overwrite
+        // the reason recorded at quit time.
+        let relaunched = env.reloadStore()
+        XCTAssertEqual(
+            relaunched.fetch(id: meetingId)?.transcriptionError,
+            ProcessingStatusMessage.quitDuringRecording
+        )
+
+        await env.sut.retryProcessing(meetingId: meetingId).value
+
+        XCTAssertEqual(env.sut.state, .done(meetingId: meetingId))
+        XCTAssertEqual(env.final.callCount, 1)
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        XCTAssertEqual(meeting.transcript.first?.text, "다시 처리됨")
+        XCTAssertNil(meeting.audioDirectory)
+    }
+
+    func test_saving_a_recording_that_failed_to_write_keeps_the_write_failure() async throws {
+        let env = makeSUT(useFakeRecorders: true)
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.recorders?.writer(for: .microphone)?.writeError =
+            StubProcessingError(message: "disk full")
+
+        await env.sut.saveRecordingForLater()
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        XCTAssertEqual(
+            meeting.transcriptionError?.contains("disk full"),
+            true,
+            "Quitting must not paper over a reason the recording is already incomplete"
+        )
+        XCTAssertFalse(
+            meeting.processingWasInterrupted,
+            "The write failed while it was running — that is a failure, not an interruption"
+        )
+    }
+
+    /// A retry that fails on its own is a failure, whatever stopped the attempt
+    /// before it.
+    func test_a_retry_that_fails_is_no_longer_reported_as_an_interruption() async throws {
+        let env = makeSUT()
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        await env.sut.saveRecordingForLater()
+        XCTAssertTrue(try XCTUnwrap(env.store.fetch(id: meetingId)).processingWasInterrupted)
+
+        env.final.error = StubProcessingError(message: "rate limited")
+        await env.sut.retryProcessing(meetingId: meetingId).value
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        XCTAssertEqual(meeting.transcriptionError, "rate limited")
+        XCTAssertFalse(meeting.processingWasInterrupted)
+    }
+
+    func test_saving_the_recording_for_later_does_nothing_when_not_recording() async {
+        let env = makeSUT()
+        await env.sut.saveRecordingForLater()
+        XCTAssertEqual(env.sut.state, .idle)
+        XCTAssertTrue(env.store.allMeetings.isEmpty)
+    }
+
+    /// The synchronous half of the terminate path — the part
+    /// `applicationWillTerminate` can reach. A recording it does not close
+    /// leaves files no decoder will open.
+    func test_finalizing_for_termination_makes_the_recording_readable() async throws {
+        let env = makeSUT()
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        let directory = env.audioRoot.appendingPathComponent(meetingId.uuidString)
+
+        env.sut.finalizeAudioForTermination()
+
+        XCTAssertTrue(RecordedSessionAudio.isUsable(directory: directory))
+        XCTAssertGreaterThan(try XCTUnwrap(env.store.fetch(id: meetingId)).durationSeconds, 0)
+    }
+
+    /// A relaunch after that termination is the crash path: the store reads the
+    /// files and reports what it finds, and Retry has to actually work.
+    func test_a_recording_finalized_at_termination_is_retryable_after_a_relaunch() async throws {
+        let env = makeSUT()
+        env.final.result = DiarizedTranscription(
+            chunks: [TranscriptChunk(timestamp: 0, text: "복구됨", speaker: "나")],
+            billedSeconds: 9
+        )
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        env.sut.finalizeAudioForTermination()
+
+        let relaunched = env.reloadStore()
+        let reloaded = try XCTUnwrap(relaunched.fetch(id: meetingId))
+        XCTAssertEqual(
+            reloaded.transcriptionError,
+            ProcessingStatusMessage.interruptedBeforeTranscription
+        )
+        XCTAssertTrue(reloaded.canRetryProcessing)
+
+        await env.sut.retryProcessing(meetingId: meetingId).value
+
+        XCTAssertEqual(env.final.callCount, 1)
+        XCTAssertEqual(env.store.fetch(id: meetingId)?.transcript.first?.text, "복구됨")
+    }
+
+    func test_finalizing_for_termination_is_harmless_when_nothing_is_recording() {
+        let env = makeSUT()
+        env.sut.finalizeAudioForTermination()
+        XCTAssertEqual(env.sut.state, .idle)
+    }
+
+    // MARK: - Renames during post-processing
+
+    /// The detail view keeps its title field on screen for the whole pipeline,
+    /// and the pipeline suspends in it for minutes. A snapshot written back at
+    /// the end reverted the rename with nothing on screen to say so.
+    func test_a_rename_during_transcription_survives() async throws {
+        let env = makeSUT()
+        env.final.result = DiarizedTranscription(
+            chunks: [TranscriptChunk(timestamp: 0, text: "본문", speaker: "나")],
+            billedSeconds: 30
+        )
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+
+        let suspended = expectation(description: "transcription is in flight")
+        env.final.gate.onEntered = { suspended.fulfill() }
+        env.final.gate.arm()
+        let processing = Task { await env.sut.stopRecording() }
+        await fulfillment(of: [suspended], timeout: 5)
+
+        env.store.rename(id: meetingId, title: "Q3 planning")
+        env.final.gate.release()
+        await processing.value
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        XCTAssertEqual(meeting.title, "Q3 planning")
+        XCTAssertEqual(meeting.transcript.first?.text, "본문", "The result still has to be saved")
+        XCTAssertEqual(meeting.billedSeconds, 30)
+    }
+
+    func test_a_rename_during_note_generation_survives() async throws {
+        let env = makeSUT()
+        env.final.result = DiarizedTranscription(
+            chunks: [TranscriptChunk(timestamp: 0, text: "본문", speaker: "나")],
+            billedSeconds: 30
+        )
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+
+        let suspended = expectation(description: "note generation is in flight")
+        env.notes.gate.onEntered = { suspended.fulfill() }
+        env.notes.gate.arm()
+        let processing = Task { await env.sut.stopRecording() }
+        await fulfillment(of: [suspended], timeout: 5)
+
+        env.store.rename(id: meetingId, title: "Q3 planning")
+        env.notes.gate.release()
+        await processing.value
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        XCTAssertEqual(meeting.title, "Q3 planning")
+        XCTAssertNotNil(meeting.notes, "The notes still have to be saved")
+        XCTAssertNil(meeting.audioDirectory, "And the audio still has to be reclaimed")
+    }
+
+    /// A rename made after a failure has to survive the retry too.
+    func test_a_rename_between_a_failure_and_a_retry_survives() async throws {
+        let env = makeSUT()
+        env.final.error = StubProcessingError(message: "rate limited")
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        await env.sut.stopRecording()
+
+        env.store.rename(id: meetingId, title: "Q3 planning")
+        env.final.error = nil
+        env.final.result = DiarizedTranscription(
+            chunks: [TranscriptChunk(timestamp: 0, text: "두 번째", speaker: "나")],
+            billedSeconds: 7
+        )
+        await env.sut.retryProcessing(meetingId: meetingId).value
+
+        XCTAssertEqual(env.store.fetch(id: meetingId)?.title, "Q3 planning")
+    }
+
     /// The refusal has to hold across `startCapture`'s suspension, not just after
     /// it returns. `startCapture` can sit on a permission prompt for seconds, and
     /// the state stays `.idle` for all of it, so the menu item that starts a
@@ -744,6 +994,84 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(env.sut.state, .idle)
     }
 
+    /// Retry is only offered while a meeting has something that can succeed, so
+    /// a meeting whose audio was already found unreadable must not reach the
+    /// paid call by any other route.
+    func test_retry_is_refused_once_the_audio_has_been_given_up_on() async throws {
+        let env = makeSUT()
+        var meeting = makeStoredMeeting(in: env)
+        meeting.transcriptionError = ProcessingStatusMessage.unreadableAudio
+        meeting.audioDirectory = nil
+        env.store.save(meeting)
+
+        await env.sut.retryProcessing(meetingId: meeting.id).value
+
+        XCTAssertEqual(env.final.callCount, 0)
+        XCTAssertEqual(env.sut.state, .idle)
+    }
+
+    /// Audio nothing can decode reaching the pipeline: it must not be uploaded,
+    /// and it must not be left occupying the disk and advertising a Retry.
+    func test_unreadable_audio_fails_without_uploading_and_is_reclaimed() async throws {
+        let env = makeSUT()
+        var meeting = makeStoredMeeting(in: env)
+        let directory = env.audioRoot.appendingPathComponent(meeting.id.uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for source in AudioSource.allCases {
+            try AudioFixtures.writeUnfinalizedTrack(
+                AudioFixtures.tone(seconds: 0.5),
+                to: RecordedSessionAudio.trackURL(for: source, in: directory)
+            )
+        }
+        meeting.audioDirectory = directory
+        meeting.transcriptionError = "rate limited"
+        env.store.save(meeting)
+
+        await env.sut.retryProcessing(meetingId: meeting.id).value
+
+        XCTAssertEqual(env.final.callCount, 0, "Unreadable audio must never be uploaded")
+        let stored = try XCTUnwrap(env.store.fetch(id: meeting.id))
+        XCTAssertEqual(stored.transcriptionError, ProcessingStatusMessage.unreadableAudio)
+        XCTAssertNil(stored.audioDirectory)
+        XCTAssertFalse(stored.canRetryProcessing)
+        XCTAssertTrue(stored.processingWasInterrupted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    /// A meeting interrupted after transcription needs no audio to finish, so
+    /// Retry has to work without it.
+    func test_retry_generates_notes_from_a_saved_transcript_with_no_audio_left() async throws {
+        let env = makeSUT()
+        var meeting = makeStoredMeeting(in: env)
+        meeting.transcript = [TranscriptChunk(timestamp: 0, text: "이미 전사됨", speaker: "나")]
+        meeting.notesGenerationError = ProcessingStatusMessage.interruptedBeforeNotes
+        meeting.audioDirectory = nil
+        env.store.save(meeting)
+
+        await env.sut.retryProcessing(meetingId: meeting.id).value
+
+        XCTAssertEqual(env.final.callCount, 0, "The transcript is saved and already paid for")
+        XCTAssertEqual(env.notes.callCount, 1)
+        let stored = try XCTUnwrap(env.store.fetch(id: meeting.id))
+        XCTAssertNotNil(stored.notes)
+        XCTAssertNil(stored.notesGenerationError)
+        XCTAssertEqual(env.sut.state, .done(meetingId: meeting.id))
+    }
+
+    func test_a_meeting_with_no_audio_and_no_transcript_offers_no_retry() {
+        var meeting = Meeting(
+            id: UUID(),
+            title: "Nothing left",
+            date: Date(),
+            durationSeconds: 10,
+            transcript: [],
+            notes: nil,
+            notesGenerationError: nil
+        )
+        meeting.transcriptionError = ProcessingStatusMessage.missingAudio
+        XCTAssertFalse(meeting.canRetryProcessing)
+    }
+
     // MARK: - Helpers
 
     private struct Environment {
@@ -753,11 +1081,19 @@ final class RecordingCoordinatorTests: XCTestCase {
         let final: MockFinalTranscriptionService
         let notes: MockNoteGenerationService
         let store: MeetingStore
+        let storeDirectory: URL
         let audioRoot: URL
         let recorders: FakeRecorderRegistry?
 
         @MainActor
         var live: FakeLiveTranscriptionService { liveFactory.latest }
+
+        /// A store built over the same directories, which is what the next
+        /// launch sees — including its interrupted-meeting detection and its
+        /// orphan sweep.
+        func reloadStore() -> MeetingStore {
+            MeetingStore(storageDirectory: storeDirectory, audioRootDirectory: audioRoot)
+        }
 
         /// Emits enough real audio for the mixer to have something to work with.
         /// Half a second is far below the speaker-reference window, so the
@@ -783,7 +1119,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         let audioRoot = root.appendingPathComponent("audio")
         try! FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
 
-        let store = MeetingStore(storageDirectory: storeDirectory)
+        let store = MeetingStore(storageDirectory: storeDirectory, audioRootDirectory: audioRoot)
         let capture = MockAudioCaptureService()
         let liveFactory = FakeLiveTranscriptionFactory()
         let final = MockFinalTranscriptionService()
@@ -808,9 +1144,26 @@ final class RecordingCoordinatorTests: XCTestCase {
             final: final,
             notes: notes,
             store: store,
+            storeDirectory: storeDirectory,
             audioRoot: audioRoot,
             recorders: recorders
         )
+    }
+
+    /// A meeting already in the store, for the paths that start from one rather
+    /// than from a recording.
+    private func makeStoredMeeting(in env: Environment) -> Meeting {
+        let meeting = Meeting(
+            id: UUID(),
+            title: "Existing",
+            date: Date(),
+            durationSeconds: 60,
+            transcript: [],
+            notes: nil,
+            notesGenerationError: nil
+        )
+        env.store.save(meeting)
+        return meeting
     }
 }
 

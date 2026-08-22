@@ -283,8 +283,80 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Stopping
 
+    /// Ends the recording and puts what was captured through the pipeline.
     func stopRecording() async {
+        guard let ended = await endRecording() else { return }
+
+        // A failed write means the file on disk is truncated. Transcribing it
+        // automatically would bill for, and hand back, a silently incomplete
+        // transcript. The audio is kept, so Retry will process whatever was
+        // captured if the user decides that is worth paying for.
+        if let writeFailure = ended.writeError {
+            return fail(
+                meetingId: ended.meetingId,
+                transcriptionError: ProcessingStatusMessage.incompleteWrite(writeFailure)
+            )
+        }
+
+        await process(meetingId: ended.meetingId)
+    }
+
+    /// Ends the recording, leaves the audio on disk and does not process it.
+    ///
+    /// This is what quitting mid-recording does. Finishing the writers is what
+    /// completes the MPEG-4 containers, and therefore the only thing that makes
+    /// the files readable at the next launch; the meeting then records why it has
+    /// no notes so nothing downstream has to guess. What it deliberately does
+    /// not do is start the paid transcription — the user asked to quit, and the
+    /// retention policy already covers processing it later.
+    func saveRecordingForLater() async {
+        guard let ended = await endRecording() else { return }
+        // A write that failed is a failure of a stage that ran, so only the
+        // ordinary case counts as the app having stopped the work itself.
+        let writeFailure = ended.writeError
+        store.update(id: ended.meetingId) {
+            $0.transcriptionError = writeFailure.map(ProcessingStatusMessage.incompleteWrite)
+                ?? ProcessingStatusMessage.quitDuringRecording
+            $0.processingWasInterrupted = writeFailure == nil
+        }
+        state = .idle
+    }
+
+    /// Closes the recording's audio files on the way out of the process.
+    ///
+    /// `applicationWillTerminate` cannot await, so this does only the part that
+    /// has to happen before the process dies: releasing the writers, which
+    /// completes the containers. Without it the files hold sample data behind an
+    /// unwritten `moov` atom that no decoder will open, which is what used to
+    /// leave an interrupted meeting offering a Retry that could never succeed.
+    ///
+    /// A no-op once either stop path has run, and a no-op when nothing is
+    /// recording. It does not describe the meeting's state: the store reads the
+    /// files at the next launch and reports what it finds there, which is also
+    /// what covers the terminations that never reach this at all.
+    func finalizeAudioForTermination() {
         guard let id = currentMeetingId else { return }
+        for recorder in recorders.values { recorder.finish() }
+        recorders.removeAll()
+        if let start = recordingStart {
+            store.update(id: id) { $0.durationSeconds = Date().timeIntervalSince(start) }
+        }
+    }
+
+    private struct EndedRecording {
+        let meetingId: UUID
+        let writeError: Error?
+    }
+
+    /// Tears down the capture path and closes the audio files.
+    ///
+    /// nil means there is nothing left to act on: either no recording was
+    /// running, or the meeting was deleted while it was. In that second case the
+    /// audio goes with it — nothing will ever read it again, and it is the one
+    /// directory no meeting record is left to point at — and the UI is put back
+    /// to idle rather than stranded on a recording screen with no recording.
+    private func endRecording() async -> EndedRecording? {
+        guard let id = currentMeetingId else { return nil }
 
         // Dropped first so a microphone-loss notification cannot re-enter this
         // while it is unwinding.
@@ -316,33 +388,19 @@ final class RecordingCoordinator: ObservableObject {
         // Readable only now: `finish()` drains the writer's own queue, so this is
         // no longer racing the thread that would set it.
         let writeFailure = recorders.values.compactMap(\.writeError).first
-        let trackURLs = AudioSource.allCases.compactMap { recorders[$0]?.url }
         recorders.removeAll()
 
-        // Gone means the user deleted the meeting while it was being recorded.
-        // There is nothing left to process, and leaving `.recording` behind would
-        // strand the UI on a recording screen with no recording.
-        guard var meeting = store.fetch(id: id) else {
+        guard store.fetch(id: id) != nil else {
+            try? FileManager.default.removeItem(at: audioDirectory(for: id))
             state = .idle
-            return
+            return nil
         }
-        meeting.durationSeconds = duration
-        store.save(meeting)
+        store.update(id: id) { $0.durationSeconds = duration }
+        return EndedRecording(meetingId: id, writeError: writeFailure)
+    }
 
-        // A failed write means the file on disk is truncated. Transcribing it
-        // automatically would bill for, and hand back, a silently incomplete
-        // transcript. The audio is kept, so Retry will process whatever was
-        // captured if the user decides that is worth paying for.
-        if let writeFailure {
-            return fail(
-                meeting: meeting,
-                transcriptionError: "The recording is incomplete — saving audio failed "
-                    + "partway through (\(writeFailure.localizedDescription)). "
-                    + "Your audio has been kept."
-            )
-        }
-
-        await process(meetingId: id, trackURLs: trackURLs)
+    private func audioDirectory(for meetingId: UUID) -> URL {
+        audioRootDirectory.appendingPathComponent(meetingId.uuidString)
     }
 
     /// Ends the live caption tier.
@@ -370,88 +428,138 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Post-processing
 
-    /// Re-runs whatever is left of the pipeline for a meeting whose audio was
-    /// kept. Does nothing for a meeting that already has notes, because its audio
-    /// has been deleted.
+    /// Re-runs whatever is left of the pipeline for a meeting that still has
+    /// something to gain from it; see `Meeting.canRetryProcessing`, which is also
+    /// what the Retry button is offered on, so this cannot be reached for a
+    /// meeting that would only fail the same way again.
     @discardableResult
     func retryProcessing(meetingId: UUID) -> Task<Void, Never> {
         Task { [weak self] in
             guard let self,
                   let meeting = self.store.fetch(id: meetingId),
-                  let directory = meeting.audioDirectory else { return }
-            let tracks = AudioSource.allCases
-                .map { directory.appendingPathComponent("\($0.fileBaseName).m4a") }
-                .filter { FileManager.default.fileExists(atPath: $0.path) }
-            await self.process(meetingId: meetingId, trackURLs: tracks)
+                  meeting.canRetryProcessing else { return }
+            await self.process(meetingId: meetingId)
         }
     }
 
-    private func process(meetingId: UUID, trackURLs: [URL]) async {
-        guard !isProcessing,
-              var meeting = store.fetch(id: meetingId),
-              let directory = meeting.audioDirectory else { return }
+    /// Everything between a finished recording and finished notes.
+    ///
+    /// Reads the meeting once for the decisions it has to make and writes
+    /// through `store.update` from then on, never saving the copy it read. Both
+    /// paid stages suspend for minutes — a 600 second timeout, up to five
+    /// attempts — and the detail view's title field is on screen throughout, so
+    /// a snapshot written back at the end silently undid a rename made in
+    /// between.
+    private func process(meetingId: UUID) async {
+        guard !isProcessing, let meeting = store.fetch(id: meetingId) else { return }
         isProcessing = true
         defer { isProcessing = false }
 
-        meeting.transcriptionError = nil
-        meeting.notesGenerationError = nil
-        store.save(meeting)
+        store.update(id: meetingId) {
+            $0.transcriptionError = nil
+            $0.notesGenerationError = nil
+            // Whatever stopped the last attempt, this one is running: anything
+            // it reports from here is a failure of a stage that ran.
+            $0.processingWasInterrupted = false
+        }
 
         // The diarized pass is the one paid call per meeting, so a non-empty
         // transcript means it already succeeded and must not be bought again.
         // Live captions are never written here, which is what keeps that test
         // unambiguous.
-        if meeting.transcript.isEmpty {
-            state = .transcribing(meetingId: meeting.id)
-            let existingTracks = trackURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
-            guard !existingTracks.isEmpty else {
-                return fail(meeting: meeting, transcriptionError: "No audio was captured.")
-            }
-            do {
-                let transcription = try await transcribe(tracks: existingTracks, in: directory)
-                guard !transcription.chunks.isEmpty else {
-                    return fail(
-                        meeting: meeting,
-                        transcriptionError: "The recording contained no recognisable speech."
-                    )
-                }
-                meeting.transcript = transcription.chunks
-                meeting.billedSeconds = transcription.billedSeconds
-                store.save(meeting)
-            } catch {
-                return fail(meeting: meeting, transcriptionError: error.localizedDescription)
-            }
+        var transcript = meeting.transcript
+        if transcript.isEmpty {
+            state = .transcribing(meetingId: meetingId)
+            guard let chunks = await transcribeRecording(
+                meetingId: meetingId,
+                directory: meeting.audioDirectory
+            ) else { return }
+            transcript = chunks
         }
-        visibleLiveTranscript = meeting.transcript
+        visibleLiveTranscript = transcript
 
-        state = .generatingNotes(meetingId: meeting.id)
+        state = .generatingNotes(meetingId: meetingId)
         do {
-            meeting.notes = try await noteGeneration.generateNotes(transcript: meeting.transcript)
-            meeting.notesGenerationError = nil
-            store.save(meeting)
+            let notes = try await noteGeneration.generateNotes(transcript: transcript)
+            store.update(id: meetingId) {
+                $0.notes = notes
+                $0.notesGenerationError = nil
+            }
         } catch {
-            meeting.notesGenerationError = error.localizedDescription
-            store.save(meeting)
+            store.update(id: meetingId) { $0.notesGenerationError = error.localizedDescription }
             state = .failed(error.localizedDescription)
-            sendNotification(
-                title: "Processing failed",
-                body: "Your recording was saved. Open Notability to retry."
-            )
+            notifyProcessingFailed(meetingId: meetingId)
             return
         }
 
         // The audio has served its purpose only once notes exist. Deleting it
         // any earlier would make a failure unrecoverable without re-recording
         // the meeting.
-        try? FileManager.default.removeItem(at: directory)
-        meeting.audioDirectory = nil
-        store.save(meeting)
+        discardAudio(of: meetingId, at: meeting.audioDirectory)
 
         state = .done(meetingId: meetingId)
         sendNotification(
             title: "Meeting notes ready",
             body: "Your meeting notes have been generated."
         )
+    }
+
+    /// Runs the paid pass over the recorded audio and saves what comes back. nil
+    /// means it did not happen and the meeting already records why.
+    private func transcribeRecording(
+        meetingId: UUID,
+        directory: URL?
+    ) async -> [TranscriptChunk]? {
+        guard let directory else {
+            fail(meetingId: meetingId, transcriptionError: ProcessingStatusMessage.noAudioCaptured)
+            return nil
+        }
+
+        let tracks: [URL]
+        switch RecordedSessionAudio.inspect(directory: directory) {
+        case .usable(let readable):
+            tracks = readable
+        case .empty:
+            fail(meetingId: meetingId, transcriptionError: ProcessingStatusMessage.noAudioCaptured)
+            return nil
+        case .unreadable:
+            // No decoder will ever open these files, so keeping them only holds
+            // disk and keeps offering a Retry that cannot work. Dropping the
+            // directory is what withdraws that offer.
+            discardAudio(of: meetingId, at: directory)
+            fail(
+                meetingId: meetingId,
+                transcriptionError: ProcessingStatusMessage.unreadableAudio,
+                // The files were left this way by something that stopped the app
+                // mid-recording, which is what the message describes.
+                wasInterrupted: true
+            )
+            return nil
+        }
+
+        do {
+            let transcription = try await transcribe(tracks: tracks, in: directory)
+            guard !transcription.chunks.isEmpty else {
+                fail(
+                    meetingId: meetingId,
+                    transcriptionError: ProcessingStatusMessage.noSpeechRecognised
+                )
+                return nil
+            }
+            store.update(id: meetingId) {
+                $0.transcript = transcription.chunks
+                $0.billedSeconds = transcription.billedSeconds
+            }
+            return transcription.chunks
+        } catch {
+            fail(meetingId: meetingId, transcriptionError: error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func discardAudio(of meetingId: UUID, at directory: URL?) {
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+        store.update(id: meetingId) { $0.audioDirectory = nil }
     }
 
     private func transcribe(tracks: [URL], in directory: URL) async throws -> DiarizedTranscription {
@@ -463,10 +571,12 @@ final class RecordingCoordinator: ObservableObject {
             try AudioMixer.mix(tracks: tracks, to: mixedURL)
         }.value
 
-        let micURL = directory.appendingPathComponent("\(AudioSource.microphone.fileBaseName).m4a")
-        let systemURL = directory
-            .appendingPathComponent("\(AudioSource.systemAudio.fileBaseName).m4a")
-        let hasSystemTrack = FileManager.default.fileExists(atPath: systemURL.path)
+        let micURL = RecordedSessionAudio.trackURL(for: .microphone, in: directory)
+        let systemURL = RecordedSessionAudio.trackURL(for: .systemAudio, in: directory)
+        // Membership rather than existence: `tracks` is already filtered to what
+        // a decoder can open, and handing the extractor a file that will not is
+        // no better than not having one.
+        let hasSystemTrack = tracks.contains(systemURL)
         // A missing reference costs only speaker naming: the local user's turns
         // still get separated, they just get a letter instead of a label.
         let reference = await Task.detached(priority: .userInitiated) {
@@ -484,14 +594,25 @@ final class RecordingCoordinator: ObservableObject {
         )
     }
 
-    private func fail(meeting: Meeting, transcriptionError: String) {
-        var updated = meeting
-        updated.transcriptionError = transcriptionError
-        store.save(updated)
+    private func fail(meetingId: UUID, transcriptionError: String, wasInterrupted: Bool = false) {
+        store.update(id: meetingId) {
+            $0.transcriptionError = transcriptionError
+            $0.processingWasInterrupted = wasInterrupted
+        }
         state = .failed(transcriptionError)
+        notifyProcessingFailed(meetingId: meetingId)
+    }
+
+    /// The body has to match what the meeting can actually do next. Telling a
+    /// user to retry a meeting whose audio has just been discarded as unreadable
+    /// is the same false promise the interrupted-meeting message used to make.
+    private func notifyProcessingFailed(meetingId: UUID) {
+        let canRetry = store.fetch(id: meetingId)?.canRetryProcessing ?? false
         sendNotification(
             title: "Processing failed",
-            body: "Your recording was saved. Open Notability to retry."
+            body: canRetry
+                ? "Your recording was saved. Open Notability to retry."
+                : "Open Notability for details."
         )
     }
 
