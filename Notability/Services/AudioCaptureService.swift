@@ -1,126 +1,194 @@
 import ScreenCaptureKit
 import AVFoundation
 import Combine
+import os
 
 final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
-                                  SCStreamOutput, SCStreamDelegate,
-                                  AVCaptureAudioDataOutputSampleBufferDelegate {
+                                 SCStreamOutput, SCStreamDelegate {
 
-    private var subject = PassthroughSubject<AudioChunk, Never>()
-    var chunkPublisher: AnyPublisher<AudioChunk, Never> {
-        subject.eraseToAnyPublisher()
-    }
+    /// 16 kHz mono Int16 is what recording, live captions and mixing all assume.
+    private static let pipelineFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 16_000,
+        channels: 1,
+        interleaved: false
+    )!
 
-    private let levelSubject = PassthroughSubject<Float, Never>()
-    var audioLevelPublisher: AnyPublisher<Float, Never> {
-        levelSubject.eraseToAnyPublisher()
-    }
+    var captureFormat: AVAudioFormat { Self.pipelineFormat }
+
+    private let relay = CaptureBufferRelay(
+        sampleRate: AudioCaptureService.pipelineFormat.sampleRate
+    )
+    var bufferPublisher: AnyPublisher<TaggedAudioBuffer, Never> { relay.bufferPublisher }
+    var audioLevelPublisher: AnyPublisher<Float, Never> { relay.levelPublisher }
 
     private let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
     var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
         systemAudioAvailabilitySubject.eraseToAnyPublisher()
     }
 
-    private(set) var isCapturingSystemAudio = false {
-        didSet {
-            guard oldValue != isCapturingSystemAudio else { return }
-            systemAudioAvailabilitySubject.send(isCapturingSystemAudio)
-        }
+    private struct Flags {
+        var isCapturingMicrophone = false
+        var isCapturingSystemAudio = false
+        var isEchoCancellationEnabled = false
+        var isMicrophoneTapInstalled = false
     }
-    private(set) var isCapturingMicrophone = false
-    // Guards processBuffer after stopCapture() — prevents post-stopRunning callbacks
-    // from appending to chunkers after flush() has already been called.
-    private var isCapturing = false
 
-    private var stream: SCStream?
-    private var captureSession: AVCaptureSession?
-    private var startDate: Date?
+    /// Written from `startCapture`/`stopCapture`, from the engine configuration
+    /// handler on the main queue, and from ScreenCaptureKit's delegate queue when
+    /// a stream dies on its own; read by the recording layer. A lock rather than
+    /// actor isolation because those delegate callbacks are synchronous.
+    private let flags = OSAllocatedUnfairLock(initialState: Flags())
 
-    private let systemAudioChunker = AudioChunker()
-    // Microphone RMS is typically lower than system audio, so use relaxed thresholds.
-    // boundaryThreshold sits above the mic noise floor (~0.002) so background hiss
-    // doesn't prevent silence detection and natural chunk boundaries are preserved.
-    private let micChunker = AudioChunker(speechThreshold: 0.003, strongSpeechThreshold: 0.008, boundaryThreshold: 0.004)
+    var isCapturingMicrophone: Bool { flags.withLock { $0.isCapturingMicrophone } }
+    var isCapturingSystemAudio: Bool { flags.withLock { $0.isCapturingSystemAudio } }
+    var isEchoCancellationEnabled: Bool { flags.withLock { $0.isEchoCancellationEnabled } }
 
-    private var cachedAudioConverter: AVAudioConverter?
-    private var cachedMicConverter: AVAudioConverter?
+    private let engine = AVAudioEngine()
+    /// Locked because ScreenCaptureKit can report the stream dead on its delegate
+    /// queue while `stopCapture` is tearing the same stream down.
+    private let activeStream = OSAllocatedUnfairLock<SCStream?>(uncheckedState: nil)
+    private let microphoneConverter = ResamplingConverter(
+        targetFormat: AudioCaptureService.pipelineFormat
+    )
+    private let systemAudioConverter = ResamplingConverter(
+        targetFormat: AudioCaptureService.pipelineFormat
+    )
+    private var configurationObserver: NSObjectProtocol?
 
-    private let captureFormat = AVAudioFormat(
-        commonFormat: .pcmFormatInt16,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: false
-    )!
-
-    private let micQueue = DispatchQueue(label: "com.notability.mic", qos: .userInitiated)
-
-    override init() {
-        super.init()
-        let publish: (URL, TimeInterval) -> Void = { [weak self] url, ts in
-            self?.subject.send((url: url, timestamp: ts))
-        }
-        systemAudioChunker.onChunk = publish
-        micChunker.onChunk = publish
-    }
+    // MARK: - Lifecycle
 
     func startCapture() async throws {
-        if let existing = stream {
-            try? await existing.stopCapture()
-            stream = nil
-        }
-        isCapturing = false
-        captureSession?.stopRunning()
-        captureSession = nil
-        cachedAudioConverter = nil
-        cachedMicConverter = nil
-        // Complete the old subject so existing subscribers terminate cleanly.
-        subject.send(completion: .finished)
-        subject = PassthroughSubject()
-        isCapturingSystemAudio = false
-        isCapturingMicrophone = false
+        await stopCapture()
 
-        // Microphone via AVCaptureSession — only needs Microphone permission.
-        // This permission persists across app updates unlike Screen Recording.
+        microphoneConverter.reset()
+        systemAudioConverter.reset()
+
         guard await requestMicrophoneAccessIfNeeded() else {
             throw CaptureError.microphonePermissionDenied
         }
-        startDate = Date()
-        isCapturing = true
-        startMicrophoneCapture()
-        guard isCapturingMicrophone else {
-            isCapturing = false
-            startDate = nil
+
+        relay.open()
+        do {
+            try startMicrophoneCapture()
+        } catch {
+            print("[AudioCaptureService] Microphone capture failed: \(error)")
+            // Unwinds a partial start: the tap may be installed and voice
+            // processing may already be on.
+            await stopCapture()
             throw CaptureError.microphoneUnavailable
         }
 
-        // System audio via ScreenCaptureKit — needs Screen Recording permission.
-        // Non-fatal if denied: recording continues with microphone only.
+        // System audio is optional: the meeting is still worth recording with
+        // just the microphone when Screen Recording permission is missing.
         await startSystemAudioCapture()
+    }
 
-        guard isCapturingSystemAudio || captureSession?.isRunning == true else {
-            throw CaptureError.noAudioSource
+    func stopCapture() async {
+        relay.close()
+
+        if let observer = configurationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configurationObserver = nil
+        }
+
+        removeMicrophoneTap()
+        if engine.isRunning {
+            engine.stop()
+        }
+        flags.withLock {
+            $0.isCapturingMicrophone = false
+            $0.isEchoCancellationEnabled = false
+        }
+
+        let stream = activeStream.withLockUnchecked { stream -> SCStream? in
+            defer { stream = nil }
+            return stream
+        }
+        do {
+            try await stream?.stopCapture()
+        } catch {
+            print("[AudioCaptureService] Stream stop error: \(error)")
+        }
+        setCapturingSystemAudio(false)
+    }
+
+    // MARK: - Microphone
+
+    private func startMicrophoneCapture() throws {
+        let input = engine.inputNode
+
+        // Voice processing runs the system echo canceller against the default
+        // output, removing meeting audio that leaks back in through the
+        // speakers. Without it the far end is transcribed twice — once from the
+        // system tap, once from the microphone — and billed twice.
+        //
+        // It depends on the input device and the audio configuration, so it can
+        // fail on machines where recording would otherwise work fine. Losing it
+        // makes the transcript messier and slightly more expensive; failing
+        // startCapture() would leave the user unable to record the meeting at
+        // all. The outcome is reported through isEchoCancellationEnabled.
+        do {
+            try input.setVoiceProcessingEnabled(true)
+            flags.withLock { $0.isEchoCancellationEnabled = true }
+        } catch {
+            flags.withLock { $0.isEchoCancellationEnabled = false }
+            print("[AudioCaptureService] Echo cancellation unavailable: \(error)")
+        }
+
+        installMicrophoneTap(on: input)
+        engine.prepare()
+        try engine.start()
+        guard engine.isRunning else { throw CaptureError.microphoneUnavailable }
+        flags.withLock { $0.isCapturingMicrophone = true }
+
+        // Fires when the user switches input device mid-meeting, e.g. to AirPods.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
         }
     }
 
-    private func startMicrophoneCapture() {
-        guard let mic = AVCaptureDevice.default(for: .audio) else { return }
+    private func handleConfigurationChange() {
+        guard relay.isOpen else { return }
 
-        let session = AVCaptureSession()
-        guard let input = try? AVCaptureDeviceInput(device: mic) else { return }
-        let output = AVCaptureAudioDataOutput()
-        output.setSampleBufferDelegate(self, queue: micQueue)
+        removeMicrophoneTap()
+        // The new device brings a new format, and the old resampler state does
+        // not belong to it. A tap callback racing this either converts with the
+        // outgoing converter or rebuilds; both are safe, because the converter
+        // locks its own state and rebuilds whenever the input format changes.
+        microphoneConverter.reset()
 
-        guard session.canAddInput(input), session.canAddOutput(output) else { return }
-        session.addInput(input)
-        session.addOutput(output)
-        session.startRunning()
-        if session.isRunning {
-            captureSession = session
-            isCapturingMicrophone = true
-        } else {
-            captureSession = nil
-            isCapturingMicrophone = false
+        let input = engine.inputNode
+        installMicrophoneTap(on: input)
+        if !engine.isRunning {
+            try? engine.start()
         }
+        flags.withLock { $0.isCapturingMicrophone = engine.isRunning }
+    }
+
+    private func installMicrophoneTap(on input: AVAudioInputNode) {
+        // Read fresh on every install: enabling voice processing changes the
+        // node's output format, and so does switching input device.
+        let format = input.outputFormat(forBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            self.publish(buffer, from: .microphone, through: self.microphoneConverter)
+        }
+        flags.withLock { $0.isMicrophoneTapInstalled = true }
+    }
+
+    private func removeMicrophoneTap() {
+        let wasInstalled = flags.withLock { flags -> Bool in
+            guard flags.isMicrophoneTapInstalled else { return false }
+            flags.isMicrophoneTapInstalled = false
+            return true
+        }
+        guard wasInstalled else { return }
+        engine.inputNode.removeTap(onBus: 0)
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
@@ -129,9 +197,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             return true
         case .notDetermined:
             return await withCheckedContinuation { continuation in
-                AVCaptureDevice.requestAccess(for: .audio) { granted in
-                    continuation.resume(returning: granted)
-                }
+                AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
             }
         case .denied, .restricted:
             return false
@@ -139,6 +205,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             return false
         }
     }
+
+    // MARK: - System audio
 
     private func startSystemAudioCapture() async {
         guard let display = try? await SCShareableContent
@@ -148,143 +216,135 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             return
         }
 
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let config = SCStreamConfiguration()
-        config.capturesAudio = true
-        config.sampleRate = 16000
-        config.channelCount = 1
-        config.width = 2
-        config.height = 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: [],
+            exceptingWindows: []
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.sampleRate = Int(captureFormat.sampleRate)
+        configuration.channelCount = 1
+        // Without this the app's own notification sounds land in the transcript.
+        configuration.excludesCurrentProcessAudio = true
+        // Video cannot be switched off, so ask for the smallest, slowest frames
+        // ScreenCaptureKit will accept.
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        let s = SCStream(filter: filter, configuration: config, delegate: self)
+        let newStream = SCStream(filter: filter, configuration: configuration, delegate: self)
         do {
-            try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
-            try await s.startCapture()
-            stream = s
-            isCapturingSystemAudio = true
+            try newStream.addStreamOutput(
+                self,
+                type: .audio,
+                sampleHandlerQueue: .global(qos: .userInitiated)
+            )
+            try await newStream.startCapture()
+            activeStream.withLockUnchecked { $0 = newStream }
+            setCapturingSystemAudio(true)
         } catch {
             print("[AudioCaptureService] System audio capture failed: \(error)")
         }
     }
 
-    func stopCapture() async {
-        isCapturing = false
-        do { try await stream?.stopCapture() } catch {
-            print("[AudioCaptureService] Stream stop error: \(error)")
-        }
-        stream = nil
-        captureSession?.stopRunning()
-        captureSession = nil
-        isCapturingSystemAudio = false
-        isCapturingMicrophone = false
-        systemAudioChunker.flush()
-        micChunker.flush()
-        subject.send(completion: .finished)
-    }
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        guard type == .audio, let description = sampleBuffer.formatDescription else { return }
+        let sourceFormat = AVAudioFormat(cmAudioFormatDescription: description)
 
-    // MARK: - SCStreamOutput (system audio)
+        let frameCount = AVAudioFrameCount(sampleBuffer.numSamples)
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount)
+        else { return }
+        buffer.frameLength = frameCount
+        CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(frameCount),
+            into: buffer.mutableAudioBufferList
+        )
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
-        processBuffer(sampleBuffer, isMicrophone: false)
+        publish(buffer, from: .systemAudio, through: systemAudioConverter)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        print("[AudioCaptureService] System audio stream stopped: \(error)")
         handleSystemAudioCaptureStopped()
     }
 
+    /// The system audio stream ended on its own — a display disconnect, or the
+    /// user revoking Screen Recording mid-meeting. The microphone keeps going and
+    /// the buffer publisher stays open, so the recording survives losing this
+    /// half of the audio.
     func handleSystemAudioCaptureStopped() {
-        stream = nil
-        systemAudioChunker.flush()
-        isCapturingSystemAudio = false
-
-        guard isCapturing, !isCapturingMicrophone else { return }
-        isCapturing = false
-        micChunker.flush()
-        subject.send(completion: .finished)
+        activeStream.withLockUnchecked { $0 = nil }
+        setCapturingSystemAudio(false)
     }
 
-    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate (microphone)
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        processBuffer(sampleBuffer, isMicrophone: true)
+    private func setCapturingSystemAudio(_ value: Bool) {
+        let changed = flags.withLock { flags -> Bool in
+            guard flags.isCapturingSystemAudio != value else { return false }
+            flags.isCapturingSystemAudio = value
+            return true
+        }
+        guard changed else { return }
+        // Hopped to the main queue so the three contexts that can change this
+        // cannot send concurrently, and because the only subscriber is UI. The
+        // getter is already up to date, so a caller reading the flag straight
+        // after startCapture() returns does not depend on this.
+        DispatchQueue.main.async { [systemAudioAvailabilitySubject] in
+            systemAudioAvailabilitySubject.send(value)
+        }
     }
 
     // MARK: - Shared processing
 
-    private func processBuffer(_ sampleBuffer: CMSampleBuffer, isMicrophone: Bool) {
-        guard isCapturing else { return }  // drop late-arriving callbacks after stopCapture()
-        guard let formatDesc = sampleBuffer.formatDescription else { return }
-        let srcFormat = AVAudioFormat(cmAudioFormatDescription: formatDesc)
+    private func publish(
+        _ buffer: AVAudioPCMBuffer,
+        from source: AudioSource,
+        through converter: ResamplingConverter
+    ) {
+        guard var converted = converter.convert(buffer) else { return }
 
-        let frameCount = AVAudioFrameCount(sampleBuffer.numSamples)
-        guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frameCount) else { return }
-        srcBuffer.frameLength = frameCount
-        CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frameCount), into: srcBuffer.mutableAudioBufferList)
-
-        if isMicrophone {
-            if cachedMicConverter == nil || !cachedMicConverter!.inputFormat.isEqual(srcFormat) {
-                cachedMicConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
-            }
-        } else {
-            if cachedAudioConverter == nil || !cachedAudioConverter!.inputFormat.isEqual(srcFormat) {
-                cachedAudioConverter = AVAudioConverter(from: srcFormat, to: captureFormat)
-            }
+        if converted === buffer {
+            // The engine reuses its tap buffer as soon as the callback returns,
+            // and subscribers keep what they are handed. Conversion allocates a
+            // fresh buffer, but a format-matched passthrough hands back the
+            // input, so that case has to be copied.
+            guard let owned = Self.copy(converted) else { return }
+            converted = owned
         }
-        guard let converter = isMicrophone ? cachedMicConverter : cachedAudioConverter,
-              let dstBuffer = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: frameCount) else { return }
 
-        var error: NSError?
-        // AVAudioConverter may call the input block multiple times until its
-        // output buffer is full. Returning the same srcBuffer with .haveData on
-        // every call (the previous behavior) caused the converter to re-process
-        // the same frames and leave dstBuffer in an undefined state. Corrupt
-        // dstBuffers reaching the chunker were the proximate cause of NULL
-        // dereferences observed in production crash logs (com.notability.audiochunker).
-        var didProvideInput = false
-        converter.convert(to: dstBuffer, error: &error) { _, outStatus in
-            if didProvideInput {
-                outStatus.pointee = .endOfStream
-                return nil
-            }
-            didProvideInput = true
-            outStatus.pointee = .haveData
-            return srcBuffer
-        }
-        guard error == nil,
-              dstBuffer.frameLength > 0,
-              dstBuffer.int16ChannelData != nil else { return }
-
-        let elapsed = startDate.map { Date().timeIntervalSince($0) } ?? 0
-        if isMicrophone {
-            micChunker.append(dstBuffer, timestamp: elapsed)
-        } else {
-            systemAudioChunker.append(dstBuffer, timestamp: elapsed)
-        }
-        // Drive waveform from whichever source is louder at any moment
-        levelSubject.send(computeRMS(dstBuffer))
+        relay.send(converted, from: source)
     }
 
-    private func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let data = buffer.int16ChannelData?[0], buffer.frameLength > 0 else { return 0 }
-        var sum: Float = 0
-        for i in 0..<Int(buffer.frameLength) {
-            let s = Float(data[i]) / 32_768.0
-            sum += s * s
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(
+            pcmFormat: buffer.format,
+            frameCapacity: buffer.frameLength
+        ) else { return nil }
+        copy.frameLength = buffer.frameLength
+
+        let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        guard source.count == destination.count else { return nil }
+        for index in 0..<source.count {
+            guard let from = source[index].mData, let to = destination[index].mData else { return nil }
+            memcpy(to, from, Int(min(source[index].mDataByteSize, destination[index].mDataByteSize)))
         }
-        return sqrt(sum / Float(buffer.frameLength))
+        return copy
     }
 
     enum CaptureError: Error, LocalizedError {
-        case noAudioSource
         case microphonePermissionDenied
         case microphoneUnavailable
 
         var errorDescription: String? {
             switch self {
-            case .noAudioSource:
-                return "No audio source is available. Grant Microphone access or Screen Recording access, then try again."
             case .microphonePermissionDenied:
                 return "Microphone access is required so your voice is included in the transcript. Go to System Settings → Privacy & Security → Microphone and enable Notability."
             case .microphoneUnavailable:

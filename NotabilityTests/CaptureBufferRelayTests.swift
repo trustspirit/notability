@@ -1,0 +1,181 @@
+import XCTest
+import AVFoundation
+import Combine
+@testable import Notability
+
+/// The relay is the only part of capture that runs without audio hardware, and
+/// it owns everything that can silently corrupt a transcript: per-source
+/// timestamps, delivery order, and the gate that stops late callbacks.
+final class CaptureBufferRelayTests: XCTestCase {
+    private var cancellables = Set<AnyCancellable>()
+
+    /// Sends arrive on whatever thread called `send`, so collection has to be
+    /// synchronised even though the assertions run on the test thread.
+    private final class Collector {
+        private let lock = NSLock()
+        private var storage: [TaggedAudioBuffer] = []
+        private var completionCount = 0
+
+        var buffers: [TaggedAudioBuffer] { lock.withLock { storage } }
+        var completions: Int { lock.withLock { completionCount } }
+
+        func startTimes(of source: AudioSource) -> [TimeInterval] {
+            buffers.filter { $0.source == source }.map(\.startTime)
+        }
+
+        func append(_ buffer: TaggedAudioBuffer) { lock.withLock { storage.append(buffer) } }
+        func complete() { lock.withLock { completionCount += 1 } }
+    }
+
+    private func collect(from sut: CaptureBufferRelay) -> Collector {
+        let collector = Collector()
+        sut.bufferPublisher
+            .sink(
+                receiveCompletion: { _ in collector.complete() },
+                receiveValue: { collector.append($0) }
+            )
+            .store(in: &cancellables)
+        return collector
+    }
+
+    /// 0.1 s at 16 kHz, so each buffer advances its clock by exactly 1_600 frames.
+    private func tenth() -> AVAudioPCMBuffer { AudioFixtures.tone(seconds: 0.1) }
+
+    // MARK: - Gate
+
+    func test_drops_buffers_sent_before_open() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+
+        sut.send(tenth(), from: .microphone)
+
+        XCTAssertTrue(collector.buffers.isEmpty)
+    }
+
+    func test_drops_buffers_sent_after_close() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+        sut.open()
+        sut.send(tenth(), from: .microphone)
+
+        sut.close()
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+
+        XCTAssertEqual(collector.buffers.count, 1)
+    }
+
+    func test_drops_zero_frame_buffers_so_timestamps_stay_strictly_increasing() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+        sut.open()
+
+        let empty = AVAudioPCMBuffer(pcmFormat: AudioFixtures.format, frameCapacity: 512)!
+        empty.frameLength = 0
+        sut.send(empty, from: .microphone)
+        sut.send(tenth(), from: .microphone)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0])
+    }
+
+    // MARK: - Timestamps
+
+    func test_each_source_advances_its_own_clock() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+        sut.open()
+
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+        sut.send(tenth(), from: .microphone)
+
+        // A single shared clock would stamp these 0, 0.1, 0.2, 0.3, 0.4 and
+        // push both tracks out of sync with the recorded audio.
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1, 0.2])
+        XCTAssertEqual(collector.startTimes(of: .systemAudio), [0, 0.1])
+    }
+
+    func test_open_restarts_both_clocks_at_zero() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+
+        sut.open()
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+        sut.close()
+
+        sut.open()
+        sut.send(tenth(), from: .microphone)
+        sut.send(tenth(), from: .systemAudio)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0])
+        XCTAssertEqual(collector.startTimes(of: .systemAudio), [0, 0])
+    }
+
+    // MARK: - Publisher lifetime
+
+    func test_buffer_publisher_never_completes_and_survives_repeated_recordings() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        // Subscribed before the first open, which is the order Task 9 is free
+        // to use precisely because the subject is never replaced.
+        let collector = collect(from: sut)
+
+        sut.open()
+        sut.send(tenth(), from: .microphone)
+        sut.close()
+        sut.open()
+        sut.send(tenth(), from: .microphone)
+        sut.close()
+
+        XCTAssertEqual(collector.buffers.count, 2, "the subscription taken before the first recording went dead")
+        XCTAssertEqual(collector.completions, 0, "a completed publisher cannot be reused for the next recording")
+    }
+
+    // MARK: - Levels
+
+    func test_reports_the_rms_of_every_published_buffer() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        var levels: [Float] = []
+        sut.levelPublisher.sink { levels.append($0) }.store(in: &cancellables)
+        sut.open()
+
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.5), from: .microphone)
+        sut.send(AudioFixtures.silence(seconds: 0.1), from: .microphone)
+
+        XCTAssertEqual(levels.count, 2)
+        // RMS of a sine is its amplitude over root two.
+        XCTAssertEqual(levels[0], 0.5 / Float(2).squareRoot(), accuracy: 0.01)
+        XCTAssertEqual(levels[1], 0, accuracy: 1e-6)
+    }
+
+    // MARK: - Concurrency
+
+    func test_keeps_per_source_order_when_both_sources_send_at_once() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collect(from: sut)
+        sut.open()
+
+        let perSource = 500
+        let group = DispatchGroup()
+        for source in AudioSource.allCases {
+            DispatchQueue(label: "test.\(source.rawValue)").async(group: group) {
+                for _ in 0..<perSource {
+                    sut.send(AudioFixtures.tone(seconds: 0.1), from: source)
+                }
+            }
+        }
+        group.wait()
+
+        for source in AudioSource.allCases {
+            let times = collector.startTimes(of: source)
+            XCTAssertEqual(times.count, perSource, "\(source) lost buffers")
+            XCTAssertEqual(
+                times,
+                (0..<perSource).map { Double($0 * 1_600) / 16_000 },
+                "\(source) buffers were stamped out of order"
+            )
+        }
+    }
+}

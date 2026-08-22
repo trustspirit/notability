@@ -1,8 +1,8 @@
 import Foundation
 import Combine
+import AVFoundation
 
 typealias TranscriptionPartialHandler = (String) async -> Void
-typealias AudioChunk = (url: URL, timestamp: TimeInterval)
 
 protocol MeetingStoreProtocol {
     var allMeetings: [Meeting] { get }
@@ -16,17 +16,72 @@ protocol MeetingStoreProtocol {
 }
 
 protocol AudioCaptureServiceProtocol {
-    var chunkPublisher: AnyPublisher<AudioChunk, Never> { get }
+    /// Tagged PCM buffers, published as they arrive. No disk round-trip.
+    ///
+    /// Neither replaced nor completed for the lifetime of the service, so one
+    /// subscription spans any number of recordings and it does not matter
+    /// whether it is taken before or after `startCapture()`. `stopCapture()`
+    /// only stops the flow of values; subscribers end their own subscription.
+    ///
+    /// Values arrive synchronously on the thread that captured them — the audio
+    /// engine's tap thread for `.microphone`, ScreenCaptureKit's sample queue
+    /// for `.systemAudio` — which is exactly one thread per source, so a
+    /// subscriber may hand a buffer straight to
+    /// `LiveTranscriptionServiceProtocol.append` without wrapping it in a task.
+    /// Deliveries are serialized across the two sources, so a subscriber that
+    /// blocks delays the other source's capture callback, and a subscriber that
+    /// reenters the capture service synchronously deadlocks.
+    ///
+    /// Buffers are always in `captureFormat`, and each one's `startTime` is
+    /// derived from its own source's accumulated frame count. The two sources'
+    /// timelines are independent: they both start at zero and advance only with
+    /// the frames that source delivered.
+    var bufferPublisher: AnyPublisher<TaggedAudioBuffer, Never> { get }
+
+    /// RMS amplitude, 0...1, of every published buffer, for the level meter.
+    /// Delivered on the capture threads described above, so hop to the main
+    /// queue before touching UI.
     var audioLevelPublisher: AnyPublisher<Float, Never> { get }
+
+    /// Replays the current value on subscription and emits on every change,
+    /// delivered on the main queue, so a view built after capture started still
+    /// sees the truth.
     var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> { get }
-    // True after startCapture() succeeds with system audio attached. False
-    // when only the microphone is being captured (e.g. user denied screen
-    // recording permission). Read after startCapture() returns.
+
+    /// True while system audio is attached. False when only the microphone is
+    /// being captured (e.g. the user denied Screen Recording permission), which
+    /// `startCapture()` treats as success.
     var isCapturingSystemAudio: Bool { get }
-    // True after startCapture() succeeds with microphone input attached.
-    // Recording requires this so the local user's voice is included.
+
+    /// True while microphone input is attached. Recording requires this so the
+    /// local user's voice is included.
     var isCapturingMicrophone: Bool { get }
+
+    /// Whether the system echo canceller is running on the microphone input.
+    ///
+    /// `startCapture()` succeeds either way, because a recording without echo
+    /// cancellation is still worth having. False means meeting audio coming back
+    /// through the speakers is also in the microphone track, so the far end gets
+    /// transcribed and billed twice — worth telling the user about. Reflects the
+    /// attempt made when capture started.
+    var isEchoCancellationEnabled: Bool { get }
+
+    /// 16 kHz mono Int16. Recording, live captions and mixing all assume it.
+    var captureFormat: AVAudioFormat { get }
+
+    /// Starts from a clean slate: any previous capture is stopped and both
+    /// timelines restart at zero.
+    ///
+    /// Succeeds with the microphone alone. It throws only when the microphone is
+    /// unavailable, because a recording without the local user's voice is not
+    /// worth keeping.
+    ///
+    /// Must not overlap with another `startCapture()` or `stopCapture()` — one
+    /// recording at a time.
     func startCapture() async throws
+
+    /// Stops every source. Once it returns, no further buffer is published.
+    /// Safe to call when nothing is running, and safe to call twice.
     func stopCapture() async
 }
 

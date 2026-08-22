@@ -7,18 +7,17 @@ import os
 /// Built while `prepare` runs and then only read, so an audio callback can use
 /// it without going back through the registry that owns it.
 ///
-/// The lock guards the `AVAudioConverter` and nothing else: it carries
-/// resampling state across calls and two threads entering it at once would
-/// corrupt it. It deliberately does not order delivery — it is released before
-/// the yield, so two threads sending for this source could convert in lock
-/// order and still reach the analyzer reversed. Keeping one appender per source
-/// is the caller's contract; see `LiveTranscriptionServiceProtocol`.
+/// Resampling state is guarded inside `ResamplingConverter`, but that guard
+/// does not order delivery — it is released before the yield, so two threads
+/// sending for this source could convert in lock order and still reach the
+/// analyzer reversed. Keeping one appender per source is the caller's contract;
+/// see `LiveTranscriptionServiceProtocol`.
 final class AnalyzerInputSink: @unchecked Sendable {
     /// Format the analyzer advertised, or nil to feed buffers through unchanged.
     let targetFormat: AVAudioFormat?
 
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
-    private let converter = OSAllocatedUnfairLock<AVAudioConverter?>(uncheckedState: nil)
+    private let converter: ResamplingConverter?
 
     /// Nanoseconds resolve every 16 kHz frame boundary exactly, so timestamps
     /// stay strictly increasing after the round trip through `CMTime`.
@@ -27,6 +26,7 @@ final class AnalyzerInputSink: @unchecked Sendable {
     init(targetFormat: AVAudioFormat?, continuation: AsyncStream<AnalyzerInput>.Continuation) {
         self.targetFormat = targetFormat
         self.continuation = continuation
+        converter = targetFormat.map(ResamplingConverter.init(targetFormat:))
     }
 
     /// Hands a captured buffer to the analyzer, resampling first if needed.
@@ -53,49 +53,8 @@ final class AnalyzerInputSink: @unchecked Sendable {
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let target = targetFormat, !buffer.format.isEqual(target) else { return buffer }
-
-        return converter.withLockUnchecked { converter in
-            // Rebuilt on demand rather than once in `prepare`, because the
-            // capture format changes when the user switches input device.
-            if converter?.inputFormat.isEqual(buffer.format) != true {
-                converter = AVAudioConverter(from: buffer.format, to: target)
-            }
-            guard let converter else { return nil }
-            return Self.render(buffer, through: converter, to: target)
-        }
-    }
-
-    private static func render(
-        _ buffer: AVAudioPCMBuffer,
-        through converter: AVAudioConverter,
-        to target: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        let ratio = target.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
-            return nil
-        }
-
-        var consumed = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            guard !consumed else {
-                // .noDataNow leaves the converter resumable. Reporting
-                // .endOfStream here would retire it after the first buffer and
-                // silently kill captions for the rest of the recording.
-                status.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            status.pointee = .haveData
-            return buffer
-        }
-
-        // A dry first call is normal while the resampler primes; the frames are
-        // held internally and come out with the next buffer.
-        guard error == nil, output.frameLength > 0 else { return nil }
-        return output
+        guard let converter else { return buffer }
+        return converter.convert(buffer)
     }
 }
 

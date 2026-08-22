@@ -419,27 +419,6 @@ final class RecordingCoordinatorTests: XCTestCase {
     }
 }
 
-final class AudioCaptureServiceTests: XCTestCase {
-    private var cancellables = Set<AnyCancellable>()
-
-    func test_systemAudioStopDoesNotCompleteChunkPublisher() async {
-        let sut = AudioCaptureService()
-        let completed = expectation(description: "chunk publisher should remain open")
-        completed.isInverted = true
-
-        sut.chunkPublisher
-            .sink(
-                receiveCompletion: { _ in completed.fulfill() },
-                receiveValue: { _ in }
-            )
-            .store(in: &cancellables)
-
-        sut.handleSystemAudioCaptureStopped()
-
-        await fulfillment(of: [completed], timeout: 0.1)
-    }
-}
-
 // MARK: - Mocks
 
 final class MockAudioCaptureService: AudioCaptureServiceProtocol {
