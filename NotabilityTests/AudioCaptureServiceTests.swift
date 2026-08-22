@@ -1,7 +1,7 @@
 import XCTest
 import AVFoundation
 import Combine
-import os
+
 @testable import Notability
 
 /// Starting real capture needs microphone and screen-recording permission plus
@@ -78,18 +78,19 @@ final class AudioCaptureServiceTests: XCTestCase {
     /// on its own queue and cannot wait for an actor hop. Blocking the main
     /// thread for the whole callback is what makes that a claim rather than a
     /// hope: a path that needed the main actor could not finish here.
+    ///
+    /// What the callback then decides is covered by `SystemAudioOwnershipTests`,
+    /// which can stage the orderings this cannot — an `SCStream` needs Screen
+    /// Recording permission and a display.
     func test_the_stream_delegate_runs_to_completion_with_the_main_thread_blocked() {
         let sut = AudioCaptureService()
-        let observed = OSAllocatedUnfairLock<Bool?>(initialState: nil)
         let finished = DispatchSemaphore(value: 0)
 
         Thread.detachNewThread {
             sut.handleSystemAudioCaptureStopped()
-            // Read on the delegate's own thread: the recording layer decides
-            // whether to show the "System audio unavailable" banner from this
-            // getter, so it has to be true before the callback returns rather
-            // than once some queue drains.
-            observed.withLock { $0 = sut.isCapturingSystemAudio }
+            // Read on the delegate's own thread too: the recording layer reads
+            // this getter without hopping anywhere.
+            _ = sut.isCapturingSystemAudio
             finished.signal()
         }
 
@@ -98,6 +99,5 @@ final class AudioCaptureServiceTests: XCTestCase {
             .success,
             "the stream delegate did not complete while the main thread was blocked"
         )
-        XCTAssertEqual(observed.withLock { $0 }, false)
     }
 }

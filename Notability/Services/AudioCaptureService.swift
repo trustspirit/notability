@@ -41,9 +41,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     }
     nonisolated var audioLevelPublisher: AnyPublisher<Float, Never> { relay.levelPublisher }
 
-    private nonisolated let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
+    /// Owns the system audio stream and the flag that says it is running, which
+    /// have to move together; see `SystemAudioOwnership`.
+    private nonisolated let systemAudio = SystemAudioOwnership<SCStream>()
     nonisolated var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
-        systemAudioAvailabilitySubject.eraseToAnyPublisher()
+        systemAudio.availabilityPublisher
     }
 
     private nonisolated let microphoneAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
@@ -59,36 +61,20 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
 
     private struct Flags {
         var isCapturingMicrophone = false
-        var isCapturingSystemAudio = false
         var isEchoCancellationEnabled = false
         var isMicrophoneTapInstalled = false
-        /// The system audio stream this service owns.
-        ///
-        /// It shares a lock with `isCapturingSystemAudio` because the two are
-        /// one fact. ScreenCaptureKit can report a stream dead from the moment
-        /// it is constructed, including while `startCapture()` is still
-        /// returning, so "which stream is ours" and "is system audio running"
-        /// have to move together — otherwise the start publishes a `true` over
-        /// the `false` the death just published, and the recording claims to be
-        /// capturing the far end while only the microphone is running.
-        var systemStream: SCStream?
     }
 
-    /// Written from `startCapture`/`stopCapture` on the main actor and from
-    /// ScreenCaptureKit's delegate queue when a stream dies on its own; read by
-    /// the recording layer from wherever it happens to be. A lock rather than
-    /// actor isolation because those delegate callbacks are synchronous and
-    /// cannot wait for a hop.
-    private nonisolated let flags = OSAllocatedUnfairLock(uncheckedState: Flags())
+    /// Written from `startCapture`/`stopCapture` and the device-change handler,
+    /// all on the main actor, and read by the recording layer from wherever it
+    /// happens to be. A lock rather than actor isolation because the tap block
+    /// also sets `isMicrophoneTapInstalled` and cannot wait for a hop.
+    private nonisolated let flags = OSAllocatedUnfairLock(initialState: Flags())
 
-    nonisolated var isCapturingMicrophone: Bool {
-        flags.withLockUnchecked { $0.isCapturingMicrophone }
-    }
-    nonisolated var isCapturingSystemAudio: Bool {
-        flags.withLockUnchecked { $0.isCapturingSystemAudio }
-    }
+    nonisolated var isCapturingMicrophone: Bool { flags.withLock { $0.isCapturingMicrophone } }
+    nonisolated var isCapturingSystemAudio: Bool { systemAudio.isRunning }
     nonisolated var isEchoCancellationEnabled: Bool {
-        flags.withLockUnchecked { $0.isEchoCancellationEnabled }
+        flags.withLock { $0.isEchoCancellationEnabled }
     }
 
     /// Main-actor isolated, which is the whole point: it has no lock of its own
@@ -149,14 +135,14 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         if engine.isRunning {
             engine.stop()
         }
-        flags.withLockUnchecked { $0.isEchoCancellationEnabled = false }
+        flags.withLock { $0.isEchoCancellationEnabled = false }
         setCapturingMicrophone(false)
 
         // Disowned before the await, not after it: from here on the stream is
         // nobody's, so a death reported while it is shutting down changes
         // nothing, and a caller looking at the flag during the shutdown is not
         // told system audio is still running.
-        let stream = takeSystemStream()
+        let stream = systemAudio.take()
         do {
             try await stream?.stopCapture()
         } catch {
@@ -182,9 +168,9 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         // through isEchoCancellationEnabled.
         do {
             try input.setVoiceProcessingEnabled(true)
-            flags.withLockUnchecked { $0.isEchoCancellationEnabled = true }
+            flags.withLock { $0.isEchoCancellationEnabled = true }
         } catch {
-            flags.withLockUnchecked { $0.isEchoCancellationEnabled = false }
+            flags.withLock { $0.isEchoCancellationEnabled = false }
             print("[AudioCaptureService] Echo cancellation unavailable: \(error)")
         }
 
@@ -247,7 +233,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         // node's output format, and so does switching input device.
         let format = input.outputFormat(forBus: 0)
         input.installTap(onBus: 0, bufferSize: 4_096, format: format, block: makeTapBlock())
-        flags.withLockUnchecked { $0.isMicrophoneTapInstalled = true }
+        flags.withLock { $0.isMicrophoneTapInstalled = true }
     }
 
     /// Built in a nonisolated context so the block does not inherit this type's
@@ -261,7 +247,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     }
 
     private func removeMicrophoneTap() {
-        let wasInstalled = flags.withLockUnchecked { flags -> Bool in
+        let wasInstalled = flags.withLock { flags -> Bool in
             guard flags.isMicrophoneTapInstalled else { return false }
             flags.isMicrophoneTapInstalled = false
             return true
@@ -313,12 +299,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         let newStream = SCStream(filter: filter, configuration: configuration, delegate: self)
-        // Owned from the moment it exists, because `self` is already its
+        // Claimed from the moment it exists, because `self` is already its
         // delegate: `stream(_:didStopWithError:)` can fire on ScreenCaptureKit's
         // queue before `startCapture()` has finished returning, and only a
-        // stream that is already recorded can be recognised as the one that
-        // died.
-        flags.withLockUnchecked { $0.systemStream = newStream }
+        // stream that is already owned can be recognised as the one that died.
+        systemAudio.claim(newStream)
         do {
             try newStream.addStreamOutput(
                 self,
@@ -326,10 +311,10 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
                 sampleHandlerQueue: .global(qos: .userInitiated)
             )
             try await newStream.startCapture()
-            markSystemAudioRunning(newStream)
+            systemAudio.markRunning(newStream)
         } catch {
             print("[AudioCaptureService] System audio capture failed: \(error)")
-            handleSystemAudioCaptureStopped(newStream)
+            systemAudio.release(newStream)
         }
     }
 
@@ -371,70 +356,20 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     /// one. Passing nil means whichever stream is held, for a caller with no
     /// particular one in hand.
     nonisolated func handleSystemAudioCaptureStopped(_ stream: SCStream? = nil) {
-        updateSystemAudio { flags in
-            guard stream == nil || flags.systemStream === stream else { return }
-            flags.systemStream = nil
-            flags.isCapturingSystemAudio = false
-        }
-    }
-
-    /// Reports system audio as running, unless `stream` has been disowned in the
-    /// meantime — which is exactly what a stream that died while `startCapture()`
-    /// was returning looks like.
-    private nonisolated func markSystemAudioRunning(_ stream: SCStream) {
-        updateSystemAudio { flags in
-            guard flags.systemStream === stream else { return }
-            flags.isCapturingSystemAudio = true
-        }
-    }
-
-    /// Hands back the owned stream so the caller can shut it down, reporting
-    /// system audio as stopped in the same breath.
-    private nonisolated func takeSystemStream() -> SCStream? {
-        var taken: SCStream?
-        updateSystemAudio { flags in
-            taken = flags.systemStream
-            flags.systemStream = nil
-            flags.isCapturingSystemAudio = false
-        }
-        return taken
-    }
-
-    /// Applies `change` to the system audio state under one lock, and publishes
-    /// the result if it moved.
-    ///
-    /// Every transition goes through here so that no two of them can be halfway
-    /// done at once. `startCapture()` returning and the delegate reporting that
-    /// same stream dead is the pairing that matters: whichever takes the lock
-    /// second sees the other's work and declines, instead of writing a flag the
-    /// other has already invalidated.
-    private nonisolated func updateSystemAudio(_ change: (inout Flags) -> Void) {
-        let published = flags.withLockUnchecked { flags -> Bool? in
-            let before = flags.isCapturingSystemAudio
-            change(&flags)
-            return flags.isCapturingSystemAudio == before ? nil : flags.isCapturingSystemAudio
-        }
-        guard let published else { return }
-        // Hopped to the main queue so the contexts that can change this cannot
-        // send concurrently, and because the only subscriber is UI. The getter
-        // is already up to date, so a caller reading the flag straight after
-        // startCapture() returns does not depend on this.
-        DispatchQueue.main.async { [self] in
-            systemAudioAvailabilitySubject.send(published)
-        }
+        guard let stream else { return systemAudio.releaseAny() }
+        systemAudio.release(stream)
     }
 
     private nonisolated func setCapturingMicrophone(_ value: Bool) {
-        let changed = flags.withLockUnchecked { flags -> Bool in
-            guard flags.isCapturingMicrophone != value else { return false }
+        flags.withLock { flags in
+            guard flags.isCapturingMicrophone != value else { return }
             flags.isCapturingMicrophone = value
-            return true
-        }
-        guard changed else { return }
-        // `self` rather than the subject: a `@MainActor` class is Sendable and a
-        // Combine subject is not, and the send is the same either way.
-        DispatchQueue.main.async { [self] in
-            microphoneAvailabilitySubject.send(value)
+            // Enqueued under the lock so subscribers see these in the order they
+            // happened, and capturing `self` rather than the subject because a
+            // `@MainActor` class is Sendable and a Combine subject is not.
+            DispatchQueue.main.async { [self] in
+                microphoneAvailabilitySubject.send(value)
+            }
         }
     }
 
