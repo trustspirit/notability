@@ -43,9 +43,12 @@ protocol AudioCaptureServiceProtocol {
     /// queue before touching UI.
     var audioLevelPublisher: AnyPublisher<Float, Never> { get }
 
-    /// Replays the current value on subscription and emits on every change,
-    /// delivered on the main queue, so a view built after capture started still
-    /// sees the truth.
+    /// Replays the current value on subscription and emits on every change, so a
+    /// view built after capture started still sees the truth.
+    ///
+    /// Changes arrive on the main queue. The replayed value does not: it is
+    /// delivered synchronously on whichever thread subscribed. Subscribe from the
+    /// main queue, or add `.receive(on:)`, rather than assuming both are hopped.
     var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> { get }
 
     /// True while system audio is attached. False when only the microphone is
@@ -56,6 +59,17 @@ protocol AudioCaptureServiceProtocol {
     /// True while microphone input is attached. Recording requires this so the
     /// local user's voice is included.
     var isCapturingMicrophone: Bool { get }
+
+    /// Tracks `isCapturingMicrophone`, with the same delivery caveat as
+    /// `systemAudioAvailabilityPublisher`.
+    ///
+    /// This can go false mid-recording: switching input device restarts the audio
+    /// engine, and a restart that fails costs the local user's voice from that
+    /// point on while system audio keeps recording. `startCapture()` throwing on
+    /// microphone failure exists because a recording without the local voice is
+    /// not worth keeping, so the same failure arriving later deserves the same
+    /// treatment — which is only possible if someone is watching this.
+    var microphoneAvailabilityPublisher: AnyPublisher<Bool, Never> { get }
 
     /// Whether the system echo canceller is running on the microphone input.
     ///

@@ -27,6 +27,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         systemAudioAvailabilitySubject.eraseToAnyPublisher()
     }
 
+    private let microphoneAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
+    var microphoneAvailabilityPublisher: AnyPublisher<Bool, Never> {
+        microphoneAvailabilitySubject.eraseToAnyPublisher()
+    }
+
     private struct Flags {
         var isCapturingMicrophone = false
         var isCapturingSystemAudio = false
@@ -96,10 +101,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         if engine.isRunning {
             engine.stop()
         }
-        flags.withLock {
-            $0.isCapturingMicrophone = false
-            $0.isEchoCancellationEnabled = false
-        }
+        flags.withLock { $0.isEchoCancellationEnabled = false }
+        setCapturingMicrophone(false)
 
         let stream = activeStream.withLockUnchecked { stream -> SCStream? in
             defer { stream = nil }
@@ -140,7 +143,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         engine.prepare()
         try engine.start()
         guard engine.isRunning else { throw CaptureError.microphoneUnavailable }
-        flags.withLock { $0.isCapturingMicrophone = true }
+        setCapturingMicrophone(true)
 
         // Fires when the user switches input device mid-meeting, e.g. to AirPods.
         configurationObserver = NotificationCenter.default.addObserver(
@@ -165,9 +168,16 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         let input = engine.inputNode
         installMicrophoneTap(on: input)
         if !engine.isRunning {
-            try? engine.start()
+            // A restart that fails here costs the rest of the local user's voice
+            // while system audio keeps recording, so it has to be visible rather
+            // than folded into a boolean nobody is watching.
+            do {
+                try engine.start()
+            } catch {
+                print("[AudioCaptureService] Engine restart after device change failed: \(error)")
+            }
         }
-        flags.withLock { $0.isCapturingMicrophone = engine.isRunning }
+        setCapturingMicrophone(engine.isRunning)
     }
 
     private func installMicrophoneTap(on input: AVAudioInputNode) {
@@ -283,6 +293,18 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     func handleSystemAudioCaptureStopped() {
         activeStream.withLockUnchecked { $0 = nil }
         setCapturingSystemAudio(false)
+    }
+
+    private func setCapturingMicrophone(_ value: Bool) {
+        let changed = flags.withLock { flags -> Bool in
+            guard flags.isCapturingMicrophone != value else { return false }
+            flags.isCapturingMicrophone = value
+            return true
+        }
+        guard changed else { return }
+        DispatchQueue.main.async { [microphoneAvailabilitySubject] in
+            microphoneAvailabilitySubject.send(value)
+        }
     }
 
     private func setCapturingSystemAudio(_ value: Bool) {
