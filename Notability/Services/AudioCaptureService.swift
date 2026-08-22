@@ -3,33 +3,58 @@ import AVFoundation
 import Combine
 import os
 
+/// Isolated to the main actor because `engine` is mutated — taps installed and
+/// removed, started and stopped — from `startCapture`, from `stopCapture`, and
+/// from the `AVAudioEngineConfigurationChange` handler, and `AVAudioEngine` has
+/// no lock of its own. Nothing else serialized those three: a non-isolated
+/// class's `async` methods run on the cooperative pool whatever the caller is
+/// on, so the handler, which is registered on the main queue, could land in the
+/// middle of either. That is what left `stopCapture()` returning with the
+/// microphone still open, and what let one bus be tapped twice — an
+/// `NSInternalInconsistencyException` no `catch` can reach.
+///
+/// The audio path stays off the actor entirely. Everything a capture callback
+/// touches — `relay`, `flags`, the converters, the tap block, the
+/// ScreenCaptureKit delegate methods — is `nonisolated` and carries its own
+/// lock, so a buffer still travels from the callback to its subscribers
+/// synchronously on the capturing thread with no hop. Per-source ordering
+/// depends on that; see `AudioCaptureServiceProtocol.bufferPublisher`.
+@MainActor
 final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
                                  SCStreamOutput, SCStreamDelegate {
 
     /// 16 kHz mono Int16 is what recording, live captions and mixing all assume.
-    private static let pipelineFormat = AVAudioFormat(
+    private nonisolated static let pipelineFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 16_000,
         channels: 1,
         interleaved: false
     )!
 
-    var captureFormat: AVAudioFormat { Self.pipelineFormat }
+    nonisolated var captureFormat: AVAudioFormat { Self.pipelineFormat }
 
-    private let relay = CaptureBufferRelay(
+    private nonisolated let relay = CaptureBufferRelay(
         sampleRate: AudioCaptureService.pipelineFormat.sampleRate
     )
-    var bufferPublisher: AnyPublisher<TaggedAudioBuffer, Never> { relay.bufferPublisher }
-    var audioLevelPublisher: AnyPublisher<Float, Never> { relay.levelPublisher }
+    nonisolated var bufferPublisher: AnyPublisher<TaggedAudioBuffer, Never> {
+        relay.bufferPublisher
+    }
+    nonisolated var audioLevelPublisher: AnyPublisher<Float, Never> { relay.levelPublisher }
 
-    private let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
-    var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
+    private nonisolated let systemAudioAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
+    nonisolated var systemAudioAvailabilityPublisher: AnyPublisher<Bool, Never> {
         systemAudioAvailabilitySubject.eraseToAnyPublisher()
     }
 
-    private let microphoneAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
-    var microphoneAvailabilityPublisher: AnyPublisher<Bool, Never> {
+    private nonisolated let microphoneAvailabilitySubject = CurrentValueSubject<Bool, Never>(false)
+    nonisolated var microphoneAvailabilityPublisher: AnyPublisher<Bool, Never> {
         microphoneAvailabilitySubject.eraseToAnyPublisher()
+    }
+
+    /// Nonisolated so a caller on any context can own the instance before it
+    /// has an actor to hop to; nothing here touches isolated state.
+    nonisolated override init() {
+        super.init()
     }
 
     private struct Flags {
@@ -39,33 +64,45 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         var isMicrophoneTapInstalled = false
     }
 
-    /// Written from `startCapture`/`stopCapture`, from the engine configuration
-    /// handler on the main queue, and from ScreenCaptureKit's delegate queue when
-    /// a stream dies on its own; read by the recording layer. A lock rather than
-    /// actor isolation because those delegate callbacks are synchronous.
-    private let flags = OSAllocatedUnfairLock(initialState: Flags())
+    /// Written from `startCapture`/`stopCapture` on the main actor and from
+    /// ScreenCaptureKit's delegate queue when a stream dies on its own; read by
+    /// the recording layer from wherever it happens to be. A lock rather than
+    /// actor isolation because those delegate callbacks are synchronous and
+    /// cannot wait for a hop.
+    private nonisolated let flags = OSAllocatedUnfairLock(initialState: Flags())
 
-    var isCapturingMicrophone: Bool { flags.withLock { $0.isCapturingMicrophone } }
-    var isCapturingSystemAudio: Bool { flags.withLock { $0.isCapturingSystemAudio } }
-    var isEchoCancellationEnabled: Bool { flags.withLock { $0.isEchoCancellationEnabled } }
+    nonisolated var isCapturingMicrophone: Bool { flags.withLock { $0.isCapturingMicrophone } }
+    nonisolated var isCapturingSystemAudio: Bool { flags.withLock { $0.isCapturingSystemAudio } }
+    nonisolated var isEchoCancellationEnabled: Bool {
+        flags.withLock { $0.isEchoCancellationEnabled }
+    }
 
+    /// Main-actor isolated, which is the whole point: it has no lock of its own
+    /// and three contexts used to reach it.
     private let engine = AVAudioEngine()
     /// Locked because ScreenCaptureKit can report the stream dead on its delegate
     /// queue while `stopCapture` is tearing the same stream down.
-    private let activeStream = OSAllocatedUnfairLock<SCStream?>(uncheckedState: nil)
-    private let microphoneConverter = ResamplingConverter(
+    private nonisolated let activeStream = OSAllocatedUnfairLock<SCStream?>(uncheckedState: nil)
+    private nonisolated let microphoneConverter = ResamplingConverter(
         targetFormat: AudioCaptureService.pipelineFormat
     )
-    private let systemAudioConverter = ResamplingConverter(
+    private nonisolated let systemAudioConverter = ResamplingConverter(
         targetFormat: AudioCaptureService.pipelineFormat
     )
     private var configurationObserver: NSObjectProtocol?
+    /// Distinguishes the current recording's device-change handler from one
+    /// belonging to an earlier one. `removeObserver` cannot recall a block that
+    /// has already been enqueued on the main queue, so a stale handler can still
+    /// run — and by then the next recording may have opened the relay, which
+    /// makes `relay.isOpen` alone no longer enough to recognise it.
+    private var captureGeneration = 0
 
     // MARK: - Lifecycle
 
     func startCapture() async throws {
         await stopCapture()
 
+        captureGeneration += 1
         microphoneConverter.reset()
         systemAudioConverter.reset()
 
@@ -147,17 +184,25 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         setCapturingMicrophone(true)
 
         // Fires when the user switches input device mid-meeting, e.g. to AirPods.
+        //
+        // `queue: .main` means the block already runs on the main thread, so
+        // `assumeIsolated` claims the actor without a hop. Hopping instead would
+        // let a stop, or a whole next recording, slip in between the switch and
+        // the response to it.
+        let generation = captureGeneration
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: .main
         ) { [weak self] _ in
-            self?.handleConfigurationChange()
+            MainActor.assumeIsolated {
+                self?.handleConfigurationChange(generation: generation)
+            }
         }
     }
 
-    private func handleConfigurationChange() {
-        guard relay.isOpen else { return }
+    private func handleConfigurationChange(generation: Int) {
+        guard generation == captureGeneration, relay.isOpen else { return }
 
         removeMicrophoneTap()
         // The new device brings a new format, and the old resampler state does
@@ -190,11 +235,18 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         // Read fresh on every install: enabling voice processing changes the
         // node's output format, and so does switching input device.
         let format = input.outputFormat(forBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format, block: makeTapBlock())
+        flags.withLock { $0.isMicrophoneTapInstalled = true }
+    }
+
+    /// Built in a nonisolated context so the block does not inherit this type's
+    /// main-actor isolation. The audio engine calls it on its own realtime
+    /// thread, and everything it reaches carries its own lock.
+    private nonisolated func makeTapBlock() -> AVAudioNodeTapBlock {
+        { [weak self] buffer, _ in
             guard let self else { return }
             self.publish(buffer, from: .microphone, through: self.microphoneConverter)
         }
-        flags.withLock { $0.isMicrophoneTapInstalled = true }
     }
 
     private func removeMicrophoneTap() {
@@ -264,7 +316,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         }
     }
 
-    func stream(
+    nonisolated func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
@@ -287,7 +339,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         publish(buffer, from: .systemAudio, through: systemAudioConverter)
     }
 
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("[AudioCaptureService] System audio stream stopped: \(error)")
         handleSystemAudioCaptureStopped()
     }
@@ -296,24 +348,26 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     /// user revoking Screen Recording mid-meeting. The microphone keeps going and
     /// the buffer publisher stays open, so the recording survives losing this
     /// half of the audio.
-    func handleSystemAudioCaptureStopped() {
+    nonisolated func handleSystemAudioCaptureStopped() {
         activeStream.withLockUnchecked { $0 = nil }
         setCapturingSystemAudio(false)
     }
 
-    private func setCapturingMicrophone(_ value: Bool) {
+    private nonisolated func setCapturingMicrophone(_ value: Bool) {
         let changed = flags.withLock { flags -> Bool in
             guard flags.isCapturingMicrophone != value else { return false }
             flags.isCapturingMicrophone = value
             return true
         }
         guard changed else { return }
-        DispatchQueue.main.async { [microphoneAvailabilitySubject] in
+        // `self` rather than the subject: a `@MainActor` class is Sendable and a
+        // Combine subject is not, and the send is the same either way.
+        DispatchQueue.main.async { [self] in
             microphoneAvailabilitySubject.send(value)
         }
     }
 
-    private func setCapturingSystemAudio(_ value: Bool) {
+    private nonisolated func setCapturingSystemAudio(_ value: Bool) {
         let changed = flags.withLock { flags -> Bool in
             guard flags.isCapturingSystemAudio != value else { return false }
             flags.isCapturingSystemAudio = value
@@ -324,14 +378,14 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         // cannot send concurrently, and because the only subscriber is UI. The
         // getter is already up to date, so a caller reading the flag straight
         // after startCapture() returns does not depend on this.
-        DispatchQueue.main.async { [systemAudioAvailabilitySubject] in
+        DispatchQueue.main.async { [self] in
             systemAudioAvailabilitySubject.send(value)
         }
     }
 
     // MARK: - Shared processing
 
-    private func publish(
+    private nonisolated func publish(
         _ buffer: AVAudioPCMBuffer,
         from source: AudioSource,
         through converter: ResamplingConverter
@@ -350,7 +404,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         relay.send(converted, from: source)
     }
 
-    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    private nonisolated static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard let copy = AVAudioPCMBuffer(
             pcmFormat: buffer.format,
             frameCapacity: buffer.frameLength
