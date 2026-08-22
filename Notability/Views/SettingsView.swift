@@ -10,7 +10,7 @@ struct SettingsView: View {
     @State private var liveCaptionsSupported: Bool?
     @ObservedObject private var modelSettings = ModelSettings.shared
 
-    private let keychainKey = "com.notability.openai-api-key"
+    private let credentialKey = "com.notability.openai-api-key"
 
     var body: some View {
         ScrollView {
@@ -25,7 +25,7 @@ struct SettingsView: View {
         .frame(width: 520, height: 640)
         .background(BrandColor.surfaceElevated)
         .onAppear {
-            let stored = CredentialsStore.load(forKey: keychainKey) ?? ""
+            let stored = CredentialsStore.load(forKey: credentialKey) ?? ""
             apiKey = stored
             keyIsSaved = !stored.isEmpty
         }
@@ -59,7 +59,7 @@ struct SettingsView: View {
 
                     HStack(spacing: Spacing.sm) {
                         Button {
-                            CredentialsStore.save(apiKey, forKey: keychainKey)
+                            CredentialsStore.save(apiKey, forKey: credentialKey)
                             keyIsSaved = true
                             saved = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
@@ -71,7 +71,7 @@ struct SettingsView: View {
 
                         if keyIsSaved {
                             Button(role: .destructive) {
-                                CredentialsStore.delete(forKey: keychainKey)
+                                CredentialsStore.delete(forKey: credentialKey)
                                 apiKey = ""
                                 keyIsSaved = false
                             } label: {
@@ -149,9 +149,14 @@ struct SettingsView: View {
         .task(id: modelSettings.effectiveTranscriptionLocaleIdentifier) {
             let identifier = modelSettings.effectiveTranscriptionLocaleIdentifier
             liveCaptionsSupported = nil
-            liveCaptionsSupported = await LiveTranscriptionService.isSupported(
+            let supported = await LiveTranscriptionService.isSupported(
                 locale: Locale(identifier: identifier)
             )
+            // isSupported has no cancellation checkpoints, so a superseded lookup
+            // still runs to completion. Without this it can finish last and
+            // overwrite the current language's answer with the previous one's.
+            guard !Task.isCancelled else { return }
+            liveCaptionsSupported = supported
         }
     }
 

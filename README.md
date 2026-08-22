@@ -7,10 +7,10 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 
 ## Features
 
-- **Microphone and system audio capture** — ScreenCaptureKit records any app's audio without extra drivers, alongside your own voice from the microphone. macOS's echo canceller is enabled on the microphone so the far end is not recorded twice when you are on speakers, and the app tells you when it could not be.
+- **Microphone and system audio capture** — ScreenCaptureKit records any app's audio without extra drivers, alongside your own voice from the microphone. macOS's echo canceller is enabled on the microphone to keep the far end from being recorded twice when you are on speakers, and the app tells you when it could not be.
 - **Live captions, on-device** — Apple's SpeechAnalyzer transcribes as you speak. No audio leaves your Mac for captions, and there is no per-minute cost.
 - **Speaker-separated final transcript** — When the meeting ends, the full recording is transcribed once with `gpt-4o-transcribe-diarize`, which labels each turn. Seeing the whole meeting at once gives far better punctuation and terminology than transcribing short fragments.
-- **AI-generated notes** — `gpt-5.5` then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
+- **AI-generated notes** — `gpt-5.5` by default then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
 - **Audio kept until notes succeed** — If transcription or note generation fails, the recording is retained so you can retry without re-recording.
 - **Meeting history** — Every transcript and note is saved locally and accessible from the sidebar.
 
@@ -45,9 +45,9 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
    Privacy & Security → Screen Recording
 5. Without Screen Recording, recording still works — it just captures your microphone alone
 
-> **Note:** The first recording in a given language downloads Apple's on-device speech model
-> (roughly 300 MB for Korean). Captions appear once it finishes; the final transcript does not
-> depend on it.
+> **Note:** The first recording in a given language downloads Apple's on-device speech model,
+> which can take a few minutes. Recording starts immediately and captions appear once the
+> download finishes; the final transcript does not depend on it.
 
 ## Usage
 
@@ -70,7 +70,7 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 | Audio encoding | AVFoundation |
 | Live transcription | Apple Speech (`SpeechAnalyzer`, on-device) |
 | Final transcription | OpenAI `gpt-4o-transcribe-diarize` |
-| Note generation | OpenAI gpt-5.5 |
+| Note generation | OpenAI gpt-5.5 (configurable) |
 | Storage | Local JSON (`~/Library/Application Support/Notability`) |
 | API key | Owner-only file in `~/Library/Application Support/Notability/credentials` |
 

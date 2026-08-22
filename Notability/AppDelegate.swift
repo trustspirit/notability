@@ -33,8 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = MeetingStore()
-        // Services read API key and model from Keychain/UserDefaults at each request —
-        // no need to pass them at init or recreate on settings change
+        // Services read the API key from CredentialsStore and the model from
+        // UserDefaults at each request — no need to pass them at init or
+        // recreate anything when settings change
         coordinator = RecordingCoordinator(
             audioCapture: AudioCaptureService(),
             // A live transcription service is single use: its event stream ends
