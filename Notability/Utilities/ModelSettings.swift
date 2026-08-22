@@ -3,43 +3,6 @@ import Foundation
 final class ModelSettings: ObservableObject {
     static let shared = ModelSettings()
 
-    enum TranscriptionMethod: String, CaseIterable, Identifiable {
-        case realtimeWhisper
-        case gpt4oTranscribe
-
-        var id: String { rawValue }
-
-        var displayName: String {
-            switch self {
-            case .realtimeWhisper: return "Realtime Whisper"
-            case .gpt4oTranscribe: return "GPT-4o Transcribe"
-            }
-        }
-
-        var model: String {
-            switch self {
-            case .realtimeWhisper: return ModelSettings.realtimeWhisperModel
-            case .gpt4oTranscribe: return ModelSettings.gpt4oTranscribeModel
-            }
-        }
-
-        var description: String {
-            switch self {
-            case .realtimeWhisper:
-                return "Fast live scribe with partial transcript updates. Higher cost per minute."
-            case .gpt4oTranscribe:
-                return "Request/response chunk transcription with lower cost and stable final text."
-            }
-        }
-    }
-
-    static let realtimeWhisperModel = "gpt-realtime-whisper"
-    static let gpt4oTranscribeModel = "gpt-4o-transcribe"
-
-    static let realtimeTranscriptionModels = [realtimeWhisperModel]
-    static let audioTranscriptionModels = [gpt4oTranscribeModel]
-    static let transcriptionModels = TranscriptionMethod.allCases.map(\.model)
-
     static let noteModels = [
         "gpt-5.5",
         "gpt-5.5-pro",
@@ -51,23 +14,25 @@ final class ModelSettings: ObservableObject {
     // Keeps prompt size bounded and limits how far user text can drown out the base contract.
     static let noteInstructionsMaxLength = 2000
 
+    /// Written by versions that let the user choose how audio was transcribed.
+    /// Nothing reads them now: live captions are on-device and the final pass
+    /// always uses the diarization model, so a stored model name could only
+    /// misdescribe what the app actually runs.
+    private static let legacyTranscriptionKeys = [
+        "transcriptionMethod",
+        "transcriptionModel",
+        "transcriptionProvider"
+    ]
+
     private let defaults: UserDefaults
-
-    @Published var transcriptionMethod: TranscriptionMethod {
-        didSet { persistTranscriptionSelection() }
-    }
-
-    var transcriptionModel: String {
-        get { transcriptionMethod.model }
-        set { transcriptionMethod = Self.method(forModel: newValue) }
-    }
 
     @Published var noteModel: String {
         didSet { defaults.set(noteModel, forKey: "noteModel") }
     }
 
-    // BCP-47 language code sent to transcription APIs (e.g. "ko", "en", "ja").
-    // Empty string = let the API auto-detect.
+    // BCP-47 language code for both transcription tiers (e.g. "ko", "en", "ja").
+    // Empty string = let the diarization API auto-detect; live captions fall back
+    // to the system locale, which has no auto-detect mode.
     @Published var transcriptionLanguage: String {
         didSet { defaults.set(transcriptionLanguage, forKey: "transcriptionLanguage") }
     }
@@ -94,37 +59,16 @@ final class ModelSettings: ObservableObject {
 
     init(userDefaults: UserDefaults = .standard) {
         defaults = userDefaults
-        transcriptionMethod = Self.savedTranscriptionMethod(in: userDefaults)
         noteModel = userDefaults.string(forKey: "noteModel") ?? "gpt-5.5"
         transcriptionLanguage = userDefaults.string(forKey: "transcriptionLanguage") ?? "ko"
         noteInstructions = userDefaults.string(forKey: "noteInstructions") ?? ""
-        persistTranscriptionSelection()
-    }
 
-    private func persistTranscriptionSelection() {
-        defaults.set(transcriptionMethod.rawValue, forKey: "transcriptionMethod")
-        defaults.set(transcriptionMethod.model, forKey: "transcriptionModel")
-        defaults.removeObject(forKey: "transcriptionProvider")
-    }
-
-    private static func savedTranscriptionMethod(in defaults: UserDefaults) -> TranscriptionMethod {
-        if
-            let rawMethod = defaults.string(forKey: "transcriptionMethod"),
-            let method = TranscriptionMethod(rawValue: rawMethod)
-        {
-            return method
+        // Guarded on presence so this is a one-time cleanup on the first launch
+        // after upgrading. `removeObject` takes the write path and posts a change
+        // notification whether or not the key exists, so an unguarded loop would
+        // pay for the migration on every launch forever.
+        for key in Self.legacyTranscriptionKeys where userDefaults.object(forKey: key) != nil {
+            userDefaults.removeObject(forKey: key)
         }
-
-        let legacyProvider = defaults.string(forKey: "transcriptionProvider")
-        let legacyModel = defaults.string(forKey: "transcriptionModel")
-
-        if legacyProvider == "realtimeAPI" || legacyModel == realtimeWhisperModel {
-            return .realtimeWhisper
-        }
-        return .gpt4oTranscribe
-    }
-
-    private static func method(forModel model: String) -> TranscriptionMethod {
-        model == realtimeWhisperModel ? .realtimeWhisper : .gpt4oTranscribe
     }
 }

@@ -6,6 +6,8 @@ struct SettingsView: View {
     @State private var showKey = false
     @State private var saved = false
     @State private var keyIsSaved = false
+    /// nil until the on-device availability lookup answers for the current language.
+    @State private var liveCaptionsSupported: Bool?
     @ObservedObject private var modelSettings = ModelSettings.shared
 
     private let keychainKey = "com.notability.openai-api-key"
@@ -101,25 +103,6 @@ struct SettingsView: View {
             SectionTitle(text: "Models")
             Card {
                 VStack(alignment: .leading, spacing: Spacing.lg) {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        Text("Transcription method")
-                            .font(.callout.weight(.medium))
-                        Picker("", selection: $modelSettings.transcriptionMethod) {
-                            ForEach(ModelSettings.TranscriptionMethod.allCases) { method in
-                                Text(method.displayName).tag(method)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        Text(transcriptionMethodDescription)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ReadOnlyModelField(
-                        label: "Transcription model",
-                        value: modelSettings.transcriptionModel
-                    )
                     ModelField(
                         label: "Note generation model",
                         value: $modelSettings.noteModel,
@@ -130,15 +113,45 @@ struct SettingsView: View {
                         value: $modelSettings.transcriptionLanguage,
                         presets: ["ko", "en", "ja", "zh", ""]
                     )
-                    Text("Empty = auto-detect. Whisper auto-detection can misfire on short clips.")
+                    Text("Empty = auto-detect for the final transcript. Live captions have no auto-detect and fall back to this Mac's language.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    liveCaptionsRow
 
                     Text("Model selections are saved automatically.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }
+        }
+    }
+
+    /// The privacy line holds regardless of language, so it is stated
+    /// unconditionally and the availability lookup only ever adds a caveat. That
+    /// keeps the row honest while `liveCaptionsSupported` is still nil — during
+    /// the lookup, or if it never answers — without a spinner or a placeholder.
+    private var liveCaptionsRow: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text("Live captions")
+                .font(.callout.weight(.medium))
+            Text("Transcribed on this Mac while you record. No audio leaves your device for captions, and they add nothing to your API bill.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if liveCaptionsSupported == false {
+                Text("This language has no on-device model, so no captions appear while recording. The final transcript is unaffected.")
+                    .font(.caption)
+                    .foregroundStyle(BrandColor.warning)
+            }
+        }
+        // Re-runs when the language changes, because the answer depends on it and
+        // the field that changes it is directly above.
+        .task(id: modelSettings.effectiveTranscriptionLocaleIdentifier) {
+            let identifier = modelSettings.effectiveTranscriptionLocaleIdentifier
+            liveCaptionsSupported = nil
+            liveCaptionsSupported = await LiveTranscriptionService.isSupported(
+                locale: Locale(identifier: identifier)
+            )
         }
     }
 
@@ -192,31 +205,6 @@ struct SettingsView: View {
         }
     }
 
-    private var transcriptionMethodDescription: String {
-        modelSettings.transcriptionMethod.description
-    }
-}
-
-private struct ReadOnlyModelField: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text(label)
-                .font(.callout.weight(.medium))
-            Text(value)
-                .font(.system(size: 13, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .padding(.horizontal, 8)
-                .background(BrandColor.surfaceElevated, in: RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
-                        .strokeBorder(BrandColor.border, lineWidth: 0.5)
-                )
-        }
-    }
 }
 
 private struct ModelField: View {

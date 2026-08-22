@@ -36,33 +36,35 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(decoded.notesGenerationError, "API error")
     }
 
-    func test_transcription_methods_expose_only_realtime_whisper_and_gpt4o_transcribe() {
-        XCTAssertEqual(
-            ModelSettings.TranscriptionMethod.allCases.map(\.model),
-            ["gpt-realtime-whisper", "gpt-4o-transcribe"]
-        )
-    }
-
-    func test_legacy_whisper_saved_setting_migrates_to_gpt4o_transcribe_method() throws {
+    /// Transcription stopped being user-selectable, so a stored model name can
+    /// only describe something the app no longer runs.
+    func test_legacy_transcription_selection_keys_are_cleared() throws {
         let defaults = try makeIsolatedUserDefaults()
-        defaults.set("audioAPI", forKey: "transcriptionProvider")
-        defaults.set("whisper-1", forKey: "transcriptionModel")
-
-        let settings = ModelSettings(userDefaults: defaults)
-
-        XCTAssertEqual(settings.transcriptionMethod, .gpt4oTranscribe)
-        XCTAssertEqual(settings.transcriptionModel, "gpt-4o-transcribe")
-    }
-
-    func test_saved_realtime_model_migrates_to_realtime_whisper_method() throws {
-        let defaults = try makeIsolatedUserDefaults()
-        defaults.set("audioAPI", forKey: "transcriptionProvider")
+        defaults.set("gpt4oTranscribe", forKey: "transcriptionMethod")
         defaults.set("gpt-realtime-whisper", forKey: "transcriptionModel")
+        defaults.set("audioAPI", forKey: "transcriptionProvider")
+
+        _ = ModelSettings(userDefaults: defaults)
+
+        XCTAssertNil(defaults.object(forKey: "transcriptionMethod"))
+        XCTAssertNil(defaults.object(forKey: "transcriptionModel"))
+        XCTAssertNil(defaults.object(forKey: "transcriptionProvider"))
+    }
+
+    /// The settings the rewrite kept must survive the cleanup above.
+    func test_surviving_settings_are_restored_from_defaults() throws {
+        let defaults = try makeIsolatedUserDefaults()
+        defaults.set("transcriptionMethod", forKey: "transcriptionMethod")
+        defaults.set("gpt-4o-mini", forKey: "noteModel")
+        defaults.set("ja", forKey: "transcriptionLanguage")
+        defaults.set("Be terse.", forKey: "noteInstructions")
 
         let settings = ModelSettings(userDefaults: defaults)
 
-        XCTAssertEqual(settings.transcriptionMethod, .realtimeWhisper)
-        XCTAssertEqual(settings.transcriptionModel, "gpt-realtime-whisper")
+        XCTAssertEqual(settings.noteModel, "gpt-4o-mini")
+        XCTAssertEqual(settings.transcriptionLanguage, "ja")
+        XCTAssertEqual(settings.noteInstructions, "Be terse.")
+        XCTAssertEqual(settings.effectiveTranscriptionLocaleIdentifier, "ja")
     }
 
     private func makeIsolatedUserDefaults() throws -> UserDefaults {
