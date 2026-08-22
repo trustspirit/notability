@@ -286,25 +286,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard case .recording = coordinator.state else { return .terminateNow }
+        switch QuitPolicy.decision(for: coordinator.state) {
+        case .quitNow:
+            return .terminateNow
+        case .ask(let prompt):
+            // A dismissal that matches no button is treated as "don't quit",
+            // which is the only safe reading while something is in flight.
+            guard let choice = present(prompt) else { return .terminateCancel }
+            return reply(to: choice)
+        }
+    }
+
+    private func present(_ prompt: QuitPrompt) -> QuitChoice? {
         let alert = NSAlert()
-        alert.messageText = "Recording in Progress"
-        alert.informativeText = "Do you want to stop recording and generate notes before quitting? This may take a moment.\n\nQuitting without saving will discard the current session."
-        alert.addButton(withTitle: "Stop & Generate Notes")
-        alert.addButton(withTitle: "Quit Without Saving")
-        alert.addButton(withTitle: "Continue Recording")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
+        alert.messageText = prompt.messageText
+        alert.informativeText = prompt.informativeText
+        for choice in prompt.choices {
+            alert.addButton(withTitle: choice.buttonTitle)
+        }
+        let index = alert.runModal().rawValue
+            - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        guard prompt.choices.indices.contains(index) else { return nil }
+        return prompt.choices[index]
+    }
+
+    private func reply(to choice: QuitChoice) -> NSApplication.TerminateReply {
+        switch choice.effect {
+        case .quitNow:
+            return .terminateNow
+        case .cancelQuit:
+            return .terminateCancel
+        case .quitAfter(let work):
             Task {
-                await coordinator.stopRecording()
+                switch work {
+                case .stopRecordingAndProcess:
+                    await coordinator.stopRecording()
+                case .saveRecordedAudio:
+                    await coordinator.saveRecordingForLater()
+                }
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
-        case .alertSecondButtonReturn:
-            return .terminateNow
-        default:
-            return .terminateCancel
         }
+    }
+
+    /// Last chance to close the recording's audio files.
+    ///
+    /// `applicationShouldTerminate` never lets a recording reach here unclosed,
+    /// so in the ordinary flow this does nothing. It exists for the terminations
+    /// that do not go through the prompt at all — a logout that AppKit does not
+    /// let an app block, or any future path that quits without asking — because
+    /// an audio file that was never closed cannot be decoded, and the whole
+    /// point of keeping the audio is that it can be read later.
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.finalizeAudioForTermination()
     }
 
     private func requestNotificationPermission() {
