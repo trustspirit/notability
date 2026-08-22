@@ -182,7 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Recording Failed"
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        runModal(alert)
     }
 
     func showRecordingPermissionAlert() {
@@ -209,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         alert.addButton(withTitle: "Open Settings & Relaunch")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if runModal(alert) == .alertFirstButtonReturn {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
             relaunch()
         }
@@ -227,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Notability needs Microphone access so your voice is included in the transcript.\n\nGo to System Settings → Privacy & Security → Microphone and enable Notability, then relaunch."
             alert.addButton(withTitle: "Open Settings & Relaunch")
             alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if runModal(alert) == .alertFirstButtonReturn {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
                 relaunch()
             }
@@ -313,10 +313,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for choice in prompt.choices {
             alert.addButton(withTitle: choice.buttonTitle)
         }
-        let index = alert.runModal().rawValue
+        let index = runModal(alert).rawValue
             - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         guard prompt.choices.indices.contains(index) else { return nil }
         return prompt.choices[index]
+    }
+
+    /// Shows an alert, bringing the app forward first.
+    ///
+    /// Notability has no Dock icon, so an alert raised while another app is active
+    /// can sit behind that app's windows with nothing to click to reach it. Since
+    /// `runModal` blocks until the alert is answered, an unreachable alert is
+    /// indistinguishable from a hung app — and the alerts here are the ones that
+    /// decide whether a recording is kept, so they cannot be the ones that go
+    /// missing. Not covered by tests: a modal session needs a real
+    /// `NSApplication` and blocks until something answers it.
+    @discardableResult
+    private func runModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal()
     }
 
     private func reply(to choice: QuitChoice) -> NSApplication.TerminateReply {
