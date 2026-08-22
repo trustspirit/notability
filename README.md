@@ -21,6 +21,11 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 - macOS 26.0 (Tahoe) or later
 - OpenAI API Key ([get one here](https://platform.openai.com/api-keys))
 
+Versions 1.5.0 and earlier ran on macOS 14. On-device live captions need the Speech framework
+introduced in macOS 26, so 2.0.0 raises the floor. If you are on an older macOS, Check for Updates
+will report that you are up to date and your current version keeps working — the update is
+withheld rather than installed and broken.
+
 ### Download
 
 1. Download `Notability.zip` from the [Releases](../../releases/latest) page

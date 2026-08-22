@@ -70,6 +70,16 @@ jobs:
           test "$APP_VERSION" = "$VERSION"
           test "$APP_BUILD" = "$BUILD"
 
+          # Taken from the built bundle rather than project.yml so the appcast's
+          # OS requirement cannot drift from the one macOS actually enforces.
+          MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP_INFO")
+          # Sparkle compares these as version numbers and recommends three parts.
+          case "$(printf '%s' "$MIN_OS" | tr -cd '.' | wc -c | tr -d ' ')" in
+            0) MIN_OS="${MIN_OS}.0.0" ;;
+            1) MIN_OS="${MIN_OS}.0" ;;
+          esac
+          printf 'min_os=%s\n' "$MIN_OS" >> "$GITHUB_ENV"
+
       - name: Sign app bundle deeply
         run: |
           APP="build/DerivedData/Build/Products/Release/Notability.app"
@@ -126,6 +136,12 @@ jobs:
                 <pubDate>${PUBDATE}</pubDate>
                 <sparkle:version>${BUILD}</sparkle:version>
                 <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <!-- Without this Sparkle offers the update to every existing
+                     user, including those below the deployment target, who then
+                     install a build macOS refuses to launch. Since the feed
+                     carries only the newest item, filtered-out users are told
+                     they are up to date, which is the intended dead end. -->
+                <sparkle:minimumSystemVersion>${min_os}</sparkle:minimumSystemVersion>
                 <enclosure
                     url="${DOWNLOAD_URL}"
                     sparkle:edSignature="${ed_sig}"

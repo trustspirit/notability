@@ -30,6 +30,25 @@ curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/${APP_NAME}.zip"
 echo "Unpacking..."
 ditto -xk "${TMP_DIR}/${APP_NAME}.zip" "$TMP_DIR"
 
+# Checked against the downloaded bundle rather than a hardcoded version so this
+# script cannot fall behind the deployment target. It has to happen before the
+# existing install is removed below: otherwise an unsupported machine loses a
+# working copy in exchange for one macOS refuses to launch.
+REQUIRED_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" \
+  "${TMP_DIR}/${APP_NAME}.app/Contents/Info.plist" 2>/dev/null || true)
+CURRENT_OS=$(sw_vers -productVersion)
+if [ -n "$REQUIRED_OS" ] && \
+   [ "$(printf '%s\n%s\n' "$REQUIRED_OS" "$CURRENT_OS" | sort -V | head -1)" != "$REQUIRED_OS" ]; then
+  echo ""
+  echo "Error: ${APP_NAME} requires macOS ${REQUIRED_OS} or later, but this Mac runs ${CURRENT_OS}."
+  echo "Nothing was changed. On-device live captions need the newer Speech framework,"
+  echo "so this release cannot run on your version."
+  if [ -d "${INSTALL_DIR}/${APP_NAME}.app" ]; then
+    echo "Your existing installation was left untouched."
+  fi
+  exit 1
+fi
+
 # Remove quarantine so Gatekeeper allows the app without manual xattr step
 echo "Removing quarantine..."
 xattr -cr "${TMP_DIR}/${APP_NAME}.app"
@@ -49,7 +68,8 @@ cp -R "${TMP_DIR}/${APP_NAME}.app" "${INSTALL_DIR}/"
 echo ""
 echo "✓ ${APP_NAME} installed to ${INSTALL_DIR}/${APP_NAME}.app"
 echo ""
-echo "Grant Screen Recording permission on first launch:"
+echo "To capture the other participants, grant Screen Recording and relaunch:"
 echo "  System Settings → Privacy & Security → Screen Recording → enable Notability"
+echo "Without it Notability still records, but only your microphone."
 echo ""
 open "${INSTALL_DIR}/${APP_NAME}.app"
