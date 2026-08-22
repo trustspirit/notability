@@ -1,26 +1,24 @@
 # Notability
 
-A macOS menu bar app that captures system audio from any meeting tool — Zoom, Google Meet, Teams — without plugins, and uses AI to automatically generate meeting notes.
+A macOS menu bar app that records your meetings — your own voice plus the audio from any meeting tool, Zoom, Google Meet, or Teams, with no plugins — and turns them into speaker-separated transcripts and AI-generated notes.
 
-![macOS](https://img.shields.io/badge/macOS-14.0%2B-black?logo=apple)
+![macOS](https://img.shields.io/badge/macOS-26.0%2B-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
 
 ## Features
 
-- **System audio capture** — Uses ScreenCaptureKit to record any app's audio without extra drivers
-- **Real-time transcription** — Sends audio chunks to OpenAI through either the Audio API (`gpt-4o-transcribe`) or Realtime API (`gpt-realtime-whisper`) and shows the live transcript during the meeting
-- **AI-generated notes** — After the meeting ends, `gpt-5.5` automatically produces:
-  - **Summary** — 2–3 sentence overview
-  - **Action Items** — with assignee and due date
-  - **Key Decisions** — major decisions made
-  - **Full Transcript** — timestamped
-- **Meeting history** — All notes are saved locally and accessible from the sidebar
+- **Microphone and system audio capture** — ScreenCaptureKit records any app's audio without extra drivers, alongside your own voice from the microphone. macOS's echo canceller is enabled on the microphone so the far end is not recorded twice when you are on speakers, and the app tells you when it could not be.
+- **Live captions, on-device** — Apple's SpeechAnalyzer transcribes as you speak. No audio leaves your Mac for captions, and there is no per-minute cost.
+- **Speaker-separated final transcript** — When the meeting ends, the full recording is transcribed once with `gpt-4o-transcribe-diarize`, which labels each turn. Seeing the whole meeting at once gives far better punctuation and terminology than transcribing short fragments.
+- **AI-generated notes** — `gpt-5.5` then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
+- **Audio kept until notes succeed** — If transcription or note generation fails, the recording is retained so you can retry without re-recording.
+- **Meeting history** — Every transcript and note is saved locally and accessible from the sidebar.
 
 ## Installation
 
 ### Requirements
 
-- macOS 14.0 (Sonoma) or later
+- macOS 26.0 (Tahoe) or later
 - OpenAI API Key ([get one here](https://platform.openai.com/api-keys))
 
 ### Download
@@ -40,9 +38,16 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 
 1. Click the mic icon in the menu bar → **Settings...**
 2. Enter your OpenAI API Key and click Save
-3. When prompted for Screen Recording access, click **"Open Settings & Quit"**
-4. Enable Notability in System Settings → Privacy & Security → Screen Recording
-5. Relaunch the app — it will open automatically
+3. Allow **Microphone** access when macOS asks — your own voice is part of every recording, so
+   Notability will not record without it
+4. Start a recording. Screen Recording access is only checked at that point; if it is missing,
+   Notability offers to open System Settings and relaunch. Enable Notability under
+   Privacy & Security → Screen Recording
+5. Without Screen Recording, recording still works — it just captures your microphone alone
+
+> **Note:** The first recording in a given language downloads Apple's on-device speech model
+> (roughly 300 MB for Korean). Captions appear once it finishes; the final transcript does not
+> depend on it.
 
 ## Usage
 
@@ -53,17 +58,21 @@ A macOS menu bar app that captures system audio from any meeting tool — Zoom, 
 | ⏳ icon | AI is generating your notes |
 | Completion notification | Click to view the finished notes |
 
+> **Note:** The final transcript is one upload, which caps a meeting at roughly 2 hours 20
+> minutes. Longer recordings fail with a "too long" message and are kept on disk.
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| UI | SwiftUI (macOS 14+) |
-| Audio capture | ScreenCaptureKit |
+| UI | SwiftUI (macOS 26+) |
+| Audio capture | ScreenCaptureKit (system audio), AVAudioEngine (microphone) |
 | Audio encoding | AVFoundation |
-| Transcription | OpenAI Audio API (`gpt-4o-transcribe`) or Realtime API (`gpt-realtime-whisper`) |
+| Live transcription | Apple Speech (`SpeechAnalyzer`, on-device) |
+| Final transcription | OpenAI `gpt-4o-transcribe-diarize` |
 | Note generation | OpenAI gpt-5.5 |
 | Storage | Local JSON (`~/Library/Application Support/Notability`) |
-| API key | macOS Keychain |
+| API key | Owner-only file in `~/Library/Application Support/Notability/credentials` |
 
 ## Building from Source
 
@@ -79,9 +88,15 @@ open Notability.xcodeproj
 
 ## Privacy
 
-- Audio is sent to the OpenAI API for transcription (subject to OpenAI's Privacy Policy)
-- Meeting notes are stored locally on your device only
-- Your API key is stored securely in the macOS Keychain
+- Live captions are produced entirely on your Mac. No audio is sent anywhere for them.
+- The recording is uploaded to the OpenAI API once, after the meeting ends, for the final
+  transcript; the transcript is then sent for note generation (subject to OpenAI's Privacy Policy).
+- The recording is deleted from disk as soon as notes are generated successfully. It is kept only
+  when something failed and you may want to retry.
+- Meeting notes and transcripts are stored locally on your device only.
+- Your API key is stored with owner-only file permissions in
+  `~/Library/Application Support/Notability/credentials` rather than the Keychain, because ad-hoc
+  signed builds get a new Keychain identity on every update and stored keys appear to vanish.
 
 ## License
 
