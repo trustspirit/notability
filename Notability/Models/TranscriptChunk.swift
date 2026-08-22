@@ -27,10 +27,11 @@ extension TranscriptChunk {
     /// output both go through here so a segment never renders an empty label in
     /// one place and a bare `:` in the other.
     var displaySpeaker: String? {
-        guard let speaker, !speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let trimmed = speaker?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
             return nil
         }
-        return speaker
+        return trimmed
     }
 }
 
@@ -48,10 +49,12 @@ extension Array where Element == TranscriptChunk {
     /// yield two segments sharing a start time. Duplicate `ForEach` ids make
     /// SwiftUI drop or misplace rows.
     ///
-    /// Positional identity is only stable because both callers append —
-    /// a stored transcript never changes, and live captions grow at the tail.
-    /// Inserting a row mid-list would re-render every row after it rather than
-    /// moving them.
+    /// Positional identity re-renders rows rather than moving them when the list
+    /// shifts. A stored transcript never shifts. Live captions do: the provisional
+    /// row for one source moves down when the other source finalizes a row ahead
+    /// of it. That only touches the last row or two, whose text is changing on
+    /// every event anyway, so the re-render costs nothing worth a stable segment
+    /// id — but a feature that reorders or inserts earlier rows would need one.
     func identifiedRows() -> [IdentifiedTranscriptChunk] {
         enumerated().map { IdentifiedTranscriptChunk(id: $0.offset, chunk: $0.element) }
     }

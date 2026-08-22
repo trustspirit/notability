@@ -143,11 +143,11 @@ private struct LiveRecordingView: View {
     /// warnings for what is a common setup.
     ///
     /// Both conditions can hold at once, but the echo-cancellation warning is
-    /// only *true* when system audio is being captured — the double transcription
-    /// and double billing it warns about need that second copy of the far end.
-    /// With no system track there is one copy either way, so when system audio is
-    /// missing that warning would be a false alarm on top of the more serious
-    /// problem that half the meeting is not being recorded.
+    /// only *true* when system audio is being captured — the duplication it warns
+    /// about needs that second copy of the far end. With no system track there is
+    /// one copy either way, so when system audio is missing that warning would be
+    /// a false alarm on top of the more serious problem that half the meeting is
+    /// not being recorded.
     @ViewBuilder
     private var captureWarning: some View {
         if !coordinator.systemAudioAvailable {
@@ -163,7 +163,7 @@ private struct LiveRecordingView: View {
         } else if !coordinator.echoCancellationEnabled {
             WarningBanner(
                 title: "Echo cancellation unavailable",
-                message: "Your speakers are bleeding into the microphone, so the other side will be transcribed twice and billed twice. Use headphones for this meeting.",
+                message: "If you are on speakers, the other side will also reach your microphone, so their words can appear twice and be attributed to you. Headphones avoid this.",
                 systemImage: "speaker.wave.2.fill"
             )
             .padding(.horizontal, Spacing.lg)

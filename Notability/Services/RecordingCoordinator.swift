@@ -28,11 +28,14 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var systemAudioAvailable = true
     /// False when the system echo canceller could not be started. This only
-    /// costs anything while system audio is captured too: the far end then
-    /// bleeds from the speakers into the microphone track *and* arrives on its
-    /// own track, so the mix contains it twice and it is transcribed and billed
-    /// twice. With no system track there is only ever one copy, which is why the
-    /// recording view shows this warning only when system audio is available.
+    /// costs anything while system audio is captured too, and only on speakers:
+    /// the far end then reaches the microphone track *and* arrives on its own
+    /// track, so the mix carries it twice. Cost is unaffected — the mix is one
+    /// upload whose length is the wall clock — but the duplicate can be
+    /// transcribed twice and attributed to the local speaker, whose voice the
+    /// speaker reference has already named. With no system track there is only
+    /// ever one copy, which is why the recording view shows this warning only
+    /// when system audio is available.
     @Published private(set) var echoCancellationEnabled = true
     /// Non-nil when on-device captions are degraded or downloading. The recording
     /// and the final transcript are unaffected.

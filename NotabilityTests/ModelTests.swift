@@ -146,6 +146,16 @@ final class ModelMigrationTests: XCTestCase {
         XCTAssertEqual(TranscriptChunk(timestamp: 0, text: "t", speaker: "Speaker A").displaySpeaker, "Speaker A")
     }
 
+    /// Whatever the label check accepted is what must be rendered and copied, or
+    /// a padded label draws a pill full of whitespace.
+    func test_displaySpeaker_trims_surrounding_whitespace() {
+        XCTAssertEqual(TranscriptChunk(timestamp: 0, text: "t", speaker: " 나 ").displaySpeaker, "나")
+        XCTAssertEqual(
+            TranscriptChunk(timestamp: 0, text: "t", speaker: "\nSpeaker A\t").displaySpeaker,
+            "Speaker A"
+        )
+    }
+
     /// A blank speaker must not produce a dangling `:` in the clipboard while the
     /// transcript view shows no label for the same segment.
     func test_formattedForCopy_omits_blank_speakers() {

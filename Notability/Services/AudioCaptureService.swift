@@ -123,14 +123,15 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
 
         // Voice processing runs the system echo canceller against the default
         // output, removing meeting audio that leaks back in through the
-        // speakers. Without it the far end is transcribed twice — once from the
-        // system tap, once from the microphone — and billed twice.
+        // speakers. Without it the far end reaches the microphone as well as the
+        // system tap, so the mix carries it twice and it can be transcribed twice
+        // and attributed to the local speaker.
         //
         // It depends on the input device and the audio configuration, so it can
         // fail on machines where recording would otherwise work fine. Losing it
-        // makes the transcript messier and slightly more expensive; failing
-        // startCapture() would leave the user unable to record the meeting at
-        // all. The outcome is reported through isEchoCancellationEnabled.
+        // makes the transcript messier; failing startCapture() would leave the
+        // user unable to record the meeting at all. The outcome is reported
+        // through isEchoCancellationEnabled.
         do {
             try input.setVoiceProcessingEnabled(true)
             flags.withLock { $0.isEchoCancellationEnabled = true }
