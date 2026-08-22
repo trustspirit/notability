@@ -92,6 +92,75 @@ final class ModelMigrationTests: XCTestCase {
         XCTAssertEqual(decoded, original)
     }
 
+    /// The diarization API's segment list is used verbatim, so two segments can
+    /// share a start time. Timestamps were the `ForEach` id until this existed.
+    func test_identifiedRows_are_unique_when_timestamps_repeat() {
+        let chunks = [
+            TranscriptChunk(timestamp: 4, text: "overlapping", speaker: "A"),
+            TranscriptChunk(timestamp: 4, text: "at the same instant", speaker: "B"),
+            TranscriptChunk(timestamp: 4, text: "and a third", speaker: "A"),
+        ]
+
+        let ids = chunks.identifiedRows().map(\.id)
+
+        XCTAssertEqual(ids, [0, 1, 2])
+        XCTAssertEqual(Set(ids).count, chunks.count)
+    }
+
+    func test_identifiedRows_preserves_order_and_chunks() {
+        let chunks = [
+            TranscriptChunk(timestamp: 0, text: "first"),
+            TranscriptChunk(timestamp: 9, text: "second"),
+        ]
+
+        XCTAssertEqual(chunks.identifiedRows().map(\.chunk), chunks)
+    }
+
+    /// Live captions append, and the identity of already-visible rows must not
+    /// move when they do, or SwiftUI rebuilds rows the user is already reading.
+    func test_identifiedRows_keep_their_ids_when_a_row_is_appended() {
+        let existing = [
+            TranscriptChunk(timestamp: 0, text: "first"),
+            TranscriptChunk(timestamp: 5, text: "second"),
+        ]
+
+        let before = existing.identifiedRows()
+        let after = (existing + [TranscriptChunk(timestamp: 8, text: "third")]).identifiedRows()
+
+        XCTAssertEqual(Array(after.prefix(2)), before)
+        XCTAssertEqual(after.last?.id, 2)
+    }
+
+    func test_identifiedRows_is_empty_for_empty_transcript() {
+        XCTAssertTrue([TranscriptChunk]().identifiedRows().isEmpty)
+    }
+
+    func test_displaySpeaker_is_nil_when_there_is_nothing_to_attribute() {
+        XCTAssertNil(TranscriptChunk(timestamp: 0, text: "t", speaker: nil).displaySpeaker)
+        XCTAssertNil(TranscriptChunk(timestamp: 0, text: "t", speaker: "").displaySpeaker)
+        XCTAssertNil(TranscriptChunk(timestamp: 0, text: "t", speaker: "  \n ").displaySpeaker)
+    }
+
+    func test_displaySpeaker_returns_the_label_when_present() {
+        XCTAssertEqual(TranscriptChunk(timestamp: 0, text: "t", speaker: "나").displaySpeaker, "나")
+        XCTAssertEqual(TranscriptChunk(timestamp: 0, text: "t", speaker: "Speaker A").displaySpeaker, "Speaker A")
+    }
+
+    /// A blank speaker must not produce a dangling `:` in the clipboard while the
+    /// transcript view shows no label for the same segment.
+    func test_formattedForCopy_omits_blank_speakers() {
+        let chunks = [
+            TranscriptChunk(timestamp: 65, text: "labelled", speaker: "나"),
+            TranscriptChunk(timestamp: 70, text: "blank", speaker: "   "),
+            TranscriptChunk(timestamp: 75, text: "absent", speaker: nil),
+        ]
+
+        XCTAssertEqual(
+            chunks.formattedForCopy(),
+            "[1:05] 나: labelled\n[1:10] blank\n[1:15] absent"
+        )
+    }
+
     func test_meeting_decodes_legacy_json_without_new_fields() throws {
         let legacy = Data("""
         {"id":"1B4E28BA-2FA1-11D2-883F-0016D3CCA427","title":"Old meeting",
