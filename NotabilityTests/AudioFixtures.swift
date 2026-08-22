@@ -65,6 +65,79 @@ enum AudioFixtures {
         try file.write(from: buffer)
     }
 
+    /// AAC at the settings `SessionRecorder` writes with, so a fixture track is
+    /// the same kind of file the recording layer produces.
+    static let aacSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: 16_000.0,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: 24_000
+    ]
+
+    /// Writes a track file whose container is complete, the way `finish()`
+    /// leaves it. The `AVAudioFile` is released before this returns, which is
+    /// what completes it.
+    static func writeTrack(_ buffer: AVAudioPCMBuffer, to url: URL) throws {
+        try? FileManager.default.removeItem(at: url)
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: aacSettings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+        try file.write(from: buffer)
+    }
+
+    /// Writes a track file whose container was never completed — what a process
+    /// that dies with the `AVAudioFile` still open leaves on disk.
+    ///
+    /// A test cannot kill its own process to produce the real thing, so this
+    /// reproduces the byte layout one leaves: `ftyp` followed by a zeroed
+    /// placeholder where the `moov` atom belongs. The sample data is all
+    /// present; the index that makes it decodable is not, which is why no
+    /// decoder will open the result.
+    static func writeUnfinalizedTrack(_ buffer: AVAudioPCMBuffer, to url: URL) throws {
+        try writeTrack(buffer, to: url)
+        var bytes = [UInt8](try Data(contentsOf: url))
+        guard let header = moovHeaderRange(in: bytes) else {
+            throw FixtureError.moovAtomNotFound
+        }
+        for index in header { bytes[index] = 0 }
+        try Data(bytes).write(to: url)
+    }
+
+    /// A track file that opens and reports no audio in it: written and closed
+    /// without a single frame, which is what a source that never delivered a
+    /// buffer leaves behind.
+    static func writeEmptyTrack(to url: URL) throws {
+        try? FileManager.default.removeItem(at: url)
+        _ = try AVAudioFile(
+            forWriting: url,
+            settings: aacSettings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+    }
+
+    enum FixtureError: Error {
+        case moovAtomNotFound
+    }
+
+    /// The eight header bytes — big-endian size, then the four-character name —
+    /// of the top-level `moov` atom.
+    private static func moovHeaderRange(in bytes: [UInt8]) -> Range<Int>? {
+        var offset = 0
+        while offset + 8 <= bytes.count {
+            let size = bytes[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            if String(decoding: bytes[offset + 4..<offset + 8], as: UTF8.self) == "moov" {
+                return offset..<(offset + 8)
+            }
+            guard size >= 8 else { return nil }
+            offset += size
+        }
+        return nil
+    }
+
     /// Root-mean-square amplitude of a file, normalised to 0...1.
     static func rms(ofFileAt url: URL) throws -> Float {
         let file = try AVAudioFile(forReading: url)

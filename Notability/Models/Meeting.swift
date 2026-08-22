@@ -15,6 +15,13 @@ struct Meeting: Codable, Equatable, Identifiable {
     var transcriptionError: String?
     // usage.seconds reported by the transcription API, for cost display.
     var billedSeconds: Int?
+    /// True when processing stopped because the app did, rather than because a
+    /// stage ran and returned an error.
+    ///
+    /// Both leave their reason in one of the error fields above, but only one of
+    /// them is a failure. Calling an interruption a failure tells the user a
+    /// stage ran when it never started, so the UI reads this to pick its wording.
+    var processingWasInterrupted: Bool
 
     init(
         id: UUID,
@@ -26,7 +33,8 @@ struct Meeting: Codable, Equatable, Identifiable {
         notesGenerationError: String?,
         audioDirectory: URL? = nil,
         transcriptionError: String? = nil,
-        billedSeconds: Int? = nil
+        billedSeconds: Int? = nil,
+        processingWasInterrupted: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -38,6 +46,7 @@ struct Meeting: Codable, Equatable, Identifiable {
         self.audioDirectory = audioDirectory
         self.transcriptionError = transcriptionError
         self.billedSeconds = billedSeconds
+        self.processingWasInterrupted = processingWasInterrupted
     }
 
     init(from decoder: Decoder) throws {
@@ -52,12 +61,27 @@ struct Meeting: Codable, Equatable, Identifiable {
         audioDirectory = try c.decodeIfPresent(URL.self, forKey: .audioDirectory)
         transcriptionError = try c.decodeIfPresent(String.self, forKey: .transcriptionError)
         billedSeconds = try c.decodeIfPresent(Int.self, forKey: .billedSeconds)
+        processingWasInterrupted =
+            try c.decodeIfPresent(Bool.self, forKey: .processingWasInterrupted) ?? false
     }
 
     /// True when either processing stage failed. Both are retryable and both
     /// should look the same in a list, so callers rarely want just one.
     var hasProcessingFailure: Bool {
         transcriptionError != nil || notesGenerationError != nil
+    }
+
+    /// True when re-running the pipeline has something left to do that can
+    /// still succeed. The one condition Retry is offered on, so that no message
+    /// can suggest a retry the meeting cannot run.
+    ///
+    /// A saved transcript is enough on its own: it is the expensive half and it
+    /// leaves only note generation, which needs no audio. Otherwise there has
+    /// to be audio to transcribe, and `audioDirectory` is the claim on it —
+    /// cleared when notes succeed, and cleared when the audio turns out to be
+    /// unreadable, so a non-nil value means there is something worth reading.
+    var canRetryProcessing: Bool {
+        notes == nil && (!transcript.isEmpty || audioDirectory != nil)
     }
 }
 
