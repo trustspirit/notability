@@ -58,6 +58,7 @@ final class RecordingCoordinator: ObservableObject {
     private var liveEventTask: Task<Void, Never>?
     private var elapsedTimer: Timer?
     private var recordingStart: Date?
+    private var isStarting = false
     private var isProcessing = false
 
     private static let titleFormatter: DateFormatter = {
@@ -94,7 +95,16 @@ final class RecordingCoordinator: ObservableObject {
     // MARK: - Recording
 
     func startRecording() async throws {
-        guard recordingStart == nil else { throw CoordinatorError.alreadyRecording }
+        // Claimed before the first suspension, not after. startCapture() can take
+        // seconds waiting on a permission prompt, and the state stays .idle for
+        // all of it, so the menu item that gates on .idle is still live. A second
+        // start getting through would overwrite recorders, subscriptions and
+        // tasks, orphaning the first recording's unfinalized audio files.
+        guard !isStarting, recordingStart == nil else {
+            throw CoordinatorError.alreadyRecording
+        }
+        isStarting = true
+        defer { isStarting = false }
 
         captions = LiveCaptionAggregator()
         visibleLiveTranscript = []
@@ -375,7 +385,7 @@ final class RecordingCoordinator: ObservableObject {
         // Live captions are never written here, which is what keeps that test
         // unambiguous.
         if meeting.transcript.isEmpty {
-            state = .transcribing
+            state = .transcribing(meetingId: meeting.id)
             let existingTracks = trackURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
             guard !existingTracks.isEmpty else {
                 return fail(meeting: meeting, transcriptionError: "No audio was captured.")
@@ -397,7 +407,7 @@ final class RecordingCoordinator: ObservableObject {
         }
         visibleLiveTranscript = meeting.transcript
 
-        state = .generatingNotes
+        state = .generatingNotes(meetingId: meeting.id)
         do {
             meeting.notes = try await noteGeneration.generateNotes(transcript: meeting.transcript)
             meeting.notesGenerationError = nil

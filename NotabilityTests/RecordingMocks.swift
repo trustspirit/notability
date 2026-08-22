@@ -52,8 +52,32 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol, @unchecked Sen
     var stopCallCount: Int { calls.withLock { $0.stop } }
     var startError: Error?
 
+    /// Holds `startCapture` open, the way waiting on a permission prompt does, so
+    /// a test can act on the coordinator while the first start is still
+    /// suspended. Armed before the call; released by the test.
+    private var startGate: AsyncStream<Void>?
+    private var startGateContinuation: AsyncStream<Void>.Continuation?
+
+    /// Called once `startCapture` has reached the gate, so a test can wait for
+    /// the suspension rather than guess when it happens.
+    var onStartSuspended: (() -> Void)?
+
+    func blockStart() {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        startGate = stream
+        startGateContinuation = continuation
+    }
+
+    func releaseStart() {
+        startGateContinuation?.finish()
+    }
+
     func startCapture() async throws {
         calls.withLock { $0.start += 1 }
+        if let startGate {
+            onStartSuspended?()
+            for await _ in startGate {}
+        }
         if let startError { throw startError }
     }
 

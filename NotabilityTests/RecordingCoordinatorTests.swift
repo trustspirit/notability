@@ -604,6 +604,39 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(env.sut.state, .idle)
     }
 
+    /// The refusal has to hold across `startCapture`'s suspension, not just after
+    /// it returns. `startCapture` can sit on a permission prompt for seconds, and
+    /// the state stays `.idle` for all of it, so the menu item that starts a
+    /// recording is still live. A second start getting through would overwrite the
+    /// recorders and leave the first recording's audio files unfinalized.
+    func test_starting_twice_is_refused_while_the_first_start_is_suspended() async throws {
+        let env = makeSUT()
+        let suspended = expectation(description: "first startCapture reaches the gate")
+        env.capture.onStartSuspended = { suspended.fulfill() }
+        env.capture.blockStart()
+
+        let first = Task { try await env.sut.startRecording() }
+        await fulfillment(of: [suspended], timeout: 5)
+
+        do {
+            try await env.sut.startRecording()
+            XCTFail("A second start would orphan the first one's recorders")
+        } catch {
+            XCTAssertEqual(
+                env.capture.startCallCount,
+                1,
+                "The second start must be refused before it reaches the capture service"
+            )
+        }
+
+        env.capture.releaseStart()
+        try await first.value
+        guard case .recording = env.sut.state else {
+            return XCTFail("Expected the first recording to complete, got \(env.sut.state)")
+        }
+        XCTAssertEqual(env.store.allMeetings.count, 1)
+    }
+
     func test_starting_twice_is_refused() async throws {
         let env = makeSUT()
         try await env.sut.startRecording()

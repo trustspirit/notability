@@ -38,9 +38,8 @@ struct MainWindowView: View {
             switch newState {
             case .done(let id):
                 selectedMeetingId = id
-            case .transcribing:
-                // currentMeetingId is still set here (defer in stopRecording fires after this)
-                selectedMeetingId = coordinator.currentMeetingId
+            case .transcribing(let id):
+                selectedMeetingId = id
             default:
                 break
             }

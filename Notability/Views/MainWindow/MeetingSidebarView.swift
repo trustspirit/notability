@@ -227,12 +227,12 @@ private struct MeetingRow: View {
 
     @ViewBuilder
     private var statusBadge: some View {
-        if meeting.notes == nil && meeting.notesGenerationError == nil {
-            Image(systemName: "hourglass")
+        if meeting.hasProcessingFailure {
+            Image(systemName: "exclamationmark.triangle.fill")
                 .imageScale(.small)
                 .foregroundStyle(BrandColor.warning)
-        } else if meeting.notesGenerationError != nil {
-            Image(systemName: "exclamationmark.triangle.fill")
+        } else if meeting.notes == nil {
+            Image(systemName: "hourglass")
                 .imageScale(.small)
                 .foregroundStyle(BrandColor.warning)
         }
@@ -245,7 +245,7 @@ private struct MeetingRow: View {
     }
 
     private var indicatorColor: Color {
-        if meeting.notesGenerationError != nil { return BrandColor.warning }
+        if meeting.hasProcessingFailure { return BrandColor.warning }
         if meeting.notes == nil { return BrandColor.warning.opacity(0.6) }
         return BrandColor.success
     }

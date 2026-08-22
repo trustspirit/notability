@@ -53,14 +53,23 @@ struct Meeting: Codable, Equatable, Identifiable {
         transcriptionError = try c.decodeIfPresent(String.self, forKey: .transcriptionError)
         billedSeconds = try c.decodeIfPresent(Int.self, forKey: .billedSeconds)
     }
+
+    /// True when either processing stage failed. Both are retryable and both
+    /// should look the same in a list, so callers rarely want just one.
+    var hasProcessingFailure: Bool {
+        transcriptionError != nil || notesGenerationError != nil
+    }
 }
 
 enum RecordingState: Equatable {
     case idle
     case recording(elapsed: TimeInterval)
-    // Diarized transcription of the mixed session audio is in flight.
-    case transcribing
-    case generatingNotes
+    // Diarized transcription of the mixed session audio is in flight. Both
+    // processing states carry the meeting id because the recording has already
+    // ended by the time they are entered, so there is no "current" meeting left
+    // to ask the coordinator for.
+    case transcribing(meetingId: UUID)
+    case generatingNotes(meetingId: UUID)
     case done(meetingId: UUID)
     case failed(String)
 }

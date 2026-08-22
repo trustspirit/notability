@@ -167,14 +167,21 @@ struct MeetingDetailView: View {
             case .transcript:
                 TranscriptTabView(chunks: meeting.transcript)
             }
+        } else if let error = meeting.transcriptionError {
+            // Checked before notesGenerationError because transcription runs
+            // first: if it failed there are no notes to have failed at.
+            BrandedEmptyState(
+                title: "Transcription failed",
+                systemImage: "exclamationmark.triangle.fill",
+                message: error,
+                action: retryAction
+            )
         } else if let error = meeting.notesGenerationError {
             BrandedEmptyState(
                 title: "Note generation failed",
                 systemImage: "exclamationmark.triangle.fill",
                 message: error,
-                action: meeting.audioDirectory == nil ? nil : ("Retry", {
-                    coordinator.retryProcessing(meetingId: meeting.id)
-                })
+                action: retryAction
             )
         } else {
             BrandedEmptyState(
@@ -183,6 +190,13 @@ struct MeetingDetailView: View {
                 message: "Notability is summarizing your meeting. This usually takes under a minute."
             )
         }
+    }
+
+    /// Retrying re-reads the recorded audio, so it is only offered while that
+    /// audio is still on disk. It is deleted once notes exist.
+    private var retryAction: (String, () -> Void)? {
+        guard meeting.audioDirectory != nil else { return nil }
+        return ("Retry", { coordinator.retryProcessing(meetingId: meeting.id) })
     }
 
     private func commitTitle() {
