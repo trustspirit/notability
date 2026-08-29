@@ -7,10 +7,10 @@
     <link>https://github.com/trustspirit/notability</link>
     <language>en</language>
     <item>
-      <title>Version 2.1.0</title>
-      <pubDate>Sat, 29 Aug 2026 13:59:41 +0000</pubDate>
-      <sparkle:version>164</sparkle:version>
-      <sparkle:shortVersionString>2.1.0</sparkle:shortVersionString>
+      <title>Version 2.1.1</title>
+      <pubDate>Sat, 29 Aug 2026 14:10:17 +0000</pubDate>
+      <sparkle:version>166</sparkle:version>
+      <sparkle:shortVersionString>2.1.1</sparkle:shortVersionString>
       <!-- Without this Sparkle offers the update to every existing
            user, including those below the deployment target, who then
            install a build macOS refuses to launch. Since the feed
@@ -18,9 +18,9 @@
            they are up to date, which is the intended dead end. -->
       <sparkle:minimumSystemVersion>26.0.0</sparkle:minimumSystemVersion>
       <enclosure
-          url="https://github.com/trustspirit/notability/releases/download/v2.1.0/Notability.zip"
-          sparkle:edSignature="C1uVud8Ce/Q/3ISBvBpyt6KLe0Q8hVdq0fCakEwR1UncHFdptvt2uxOuKQgZ37Ltq5ksgf529oOaWChqN5OoCg=="
-          length="2776975"
+          url="https://github.com/trustspirit/notability/releases/download/v2.1.1/Notability.zip"
+          sparkle:edSignature="QPkRaZJ+ewuhjw9fbj2WBZlIGibsoEpun/UQbFPD1ExKcN7yuJdd5VWFjIOLDu6NfoHX2Dt3w1XmNEi30ucqBg=="
+          length="2782361"
           type="application/octet-stream"/>
     </item>
   </channel>
