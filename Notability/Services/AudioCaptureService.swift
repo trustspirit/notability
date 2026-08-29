@@ -169,6 +169,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         do {
             try input.setVoiceProcessingEnabled(true)
             flags.withLock { $0.isEchoCancellationEnabled = true }
+            Self.stopDuckingOtherAudio(on: input)
         } catch {
             flags.withLock { $0.isEchoCancellationEnabled = false }
             print("[AudioCaptureService] Echo cancellation unavailable: \(error)")
@@ -226,6 +227,35 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             }
         }
         setCapturingMicrophone(engine.isRunning)
+    }
+
+    /// Turns off the output attenuation that voice processing applies on top of
+    /// echo cancellation.
+    ///
+    /// Voice processing is one switch for three things: the echo canceller we
+    /// want, automatic gain control on the microphone, and ducking, which
+    /// quietens everything else the Mac is playing for as long as capture runs.
+    /// Ducking is right for a phone call, where the app owns both ends. Here the
+    /// user is listening to the meeting they are recording, so it turned every
+    /// recording into a meeting they could barely hear.
+    ///
+    /// Only the ducking is dropped. The echo canceller keeps working, so the far
+    /// end still does not reach the transcript twice — see the note in
+    /// `startMicrophoneCapture`. It does have to work harder: at high speaker
+    /// volume the nonlinearity the canceller cannot model grows, so some echo
+    /// can survive where ducking used to suppress it. Speaker attribution is
+    /// unaffected either way, because `SpeakerReferenceExtractor` only takes its
+    /// reference from stretches where the system track is silent and there is
+    /// nothing to leak.
+    private static func stopDuckingOtherAudio(on input: AVAudioInputNode) {
+        input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+            // Advanced ducking ducks only while the local speaker is talking,
+            // which trades constant attenuation for attenuation that comes and
+            // goes. Listening to a meeting, a level that moves is more
+            // distracting than one that is simply low.
+            enableAdvancedDucking: false,
+            duckingLevel: .min
+        )
     }
 
     private func installMicrophoneTap(on input: AVAudioInputNode) {
