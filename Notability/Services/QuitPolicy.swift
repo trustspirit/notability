@@ -14,13 +14,22 @@ import Foundation
 /// and then left the meeting and its audio behind, so the string and the
 /// behaviour are defined together and asserted together.
 enum QuitPolicy {
-    /// - Parameter isQuitting: whether a previous quit was agreed to and its
-    ///   work is still running. A second request while that is in flight must
-    ///   not prompt again: the first answer already decided what happens to the
-    ///   recording, and asking again would offer to discard work the user has
-    ///   already chosen to keep.
-    static func decision(for state: RecordingState, isQuitting: Bool = false) -> QuitDecision {
-        if isQuitting { return .alreadyQuitting }
+    /// - Parameter progress: how far a quit that was already agreed to has got.
+    ///   See `QuitProgress` — the two stages of it are answered differently, and
+    ///   only `.notQuitting` is decided from the recording state at all.
+    static func decision(for state: RecordingState, progress: QuitProgress = .notQuitting) -> QuitDecision {
+        switch progress {
+        case .workFinished:
+            // The app's own request, made once the work the user agreed to has
+            // finished. It answers to nothing else: the state left behind is
+            // not asked about, because there is nothing left to decide and
+            // refusing this quit leaves a status item that cannot be quit.
+            return .quitNow
+        case .workInFlight:
+            return .alreadyQuitting
+        case .notQuitting:
+            break
+        }
 
         switch state {
         case .idle, .done, .failed:
@@ -78,6 +87,17 @@ enum QuitPolicy {
             ))
         }
     }
+}
+
+/// How far a quit that has already been agreed to has got.
+enum QuitProgress: Equatable {
+    /// No quit has been agreed to. The recording state decides everything.
+    case notQuitting
+    /// A prompt was answered with a choice that has work to do, and that work is
+    /// still running.
+    case workInFlight
+    /// That work has finished and the app has re-requested termination itself.
+    case workFinished
 }
 
 enum QuitDecision: Equatable {

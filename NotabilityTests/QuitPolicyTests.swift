@@ -143,19 +143,35 @@ final class QuitPolicyTests: XCTestCase {
     /// work carrying it out is still running. Asking again would offer to
     /// discard what the user just chose to keep — and, before this existed,
     /// a second Quit while the first was in flight re-entered the prompt.
-    func test_a_second_quit_request_does_not_ask_again() {
+    func test_a_quit_request_while_the_work_runs_does_not_ask_again() {
         for state in Self.everyState {
             XCTAssertEqual(
-                QuitPolicy.decision(for: state, isQuitting: true),
+                QuitPolicy.decision(for: state, progress: .workInFlight),
                 .alreadyQuitting,
-                "\(state) prompted again while already quitting"
+                "\(state) prompted again while its quit work was still running"
+            )
+        }
+    }
+
+    /// The termination the app requests for itself once the agreed work is done.
+    ///
+    /// It has to go through, whatever the state left behind: cancelling it is
+    /// cancelling the quit the user asked for, and this app has no Dock icon, so
+    /// what that leaves is a live status item that cannot be quit at all. That
+    /// was the defect — the in-flight guard also caught the app's own request.
+    func test_quitting_once_the_agreed_work_is_finished_goes_through() {
+        for state in Self.everyState {
+            XCTAssertEqual(
+                QuitPolicy.decision(for: state, progress: .workFinished),
+                .quitNow,
+                "\(state) refused the app's own quit after its work had finished"
             )
         }
     }
 
     func test_not_quitting_yet_decides_from_the_state_as_before() {
-        XCTAssertEqual(QuitPolicy.decision(for: .idle, isQuitting: false), .quitNow)
-        guard case .ask = QuitPolicy.decision(for: .recording(elapsed: 12), isQuitting: false) else {
+        XCTAssertEqual(QuitPolicy.decision(for: .idle, progress: .notQuitting), .quitNow)
+        guard case .ask = QuitPolicy.decision(for: .recording(elapsed: 12), progress: .notQuitting) else {
             return XCTFail("Recording should still prompt when no quit is in flight")
         }
     }

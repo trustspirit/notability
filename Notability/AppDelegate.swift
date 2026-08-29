@@ -12,9 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var store: MeetingStore!
     private(set) var coordinator: RecordingCoordinator!
     private var stateObserver: Task<Void, Never>?
-    /// Set once a quit prompt has been answered with a choice that has work to
-    /// do, and never cleared: the only way out of it is termination.
-    private var isQuitting = false
+    /// How far a quit that has been agreed to has got. Only ever moves forward:
+    /// the only way out of it is termination.
+    private var quitProgress: QuitProgress = .notQuitting
     private let relauncher = Relauncher(launchSuccessor: Relauncher.launchAnotherInstance)
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
@@ -329,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        switch QuitPolicy.decision(for: coordinator.state, isQuitting: isQuitting) {
+        switch QuitPolicy.decision(for: coordinator.state, progress: quitProgress) {
         case .quitNow:
             return .terminateNow
         case .alreadyQuitting:
@@ -379,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .cancelQuit:
             return .terminateCancel
         case .quitAfter(let work):
-            isQuitting = true
+            quitProgress = .workInFlight
             Task {
                 switch work {
                 case .stopRecordingAndProcess:
@@ -387,9 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .saveRecordedAudio:
                     await coordinator.saveRecordingForLater()
                 }
-                // The state the work leaves behind is one `QuitPolicy` answers
-                // with `.quitNow`, so this second request terminates rather
-                // than prompting again.
+                // Strictly before the request: `.workInFlight` is what stops a
+                // quit arriving mid-work from re-prompting, and it would stop
+                // this one too. `.workFinished` is what lets it through.
+                quitProgress = .workFinished
                 NSApp.terminate(nil)
             }
             // Cancel now and terminate later on our own, rather than answering
