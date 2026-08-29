@@ -87,7 +87,35 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol, @unchecked Sen
     }
 
     func stopCapture() async {
+        await stopDelivery()
+        await finishTeardown()
+    }
+
+    @MainActor func stopDelivery() {
         calls.withLock { $0.stop += 1 }
+    }
+
+    func finishTeardown() async {
+        await waitForTeardownGate()
+    }
+
+    /// Holds the capture teardown open forever, the way a ScreenCaptureKit
+    /// stream that has already died leaves `stopCapture()` suspended. Nothing
+    /// releases it: the point is what the caller does when it never returns.
+    private var teardownGate: AsyncStream<Void>?
+    /// Retained deliberately: an `AsyncStream` finishes when its continuation is
+    /// released, which would end the wait this exists to hold open.
+    private var teardownGateContinuation: AsyncStream<Void>.Continuation?
+
+    func blockTeardown() {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        teardownGate = stream
+        teardownGateContinuation = continuation
+    }
+
+    private func waitForTeardownGate() async {
+        guard let gate = teardownGate else { return }
+        for await _ in gate {}
     }
 
     /// Publishes on the calling thread, like the real capture callbacks.

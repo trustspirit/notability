@@ -95,7 +95,8 @@ final class RecordingCoordinator: ObservableObject {
         audioRootDirectory: URL = MeetingStore.defaultAudioDirectory,
         makeSessionRecorder: @escaping SessionRecorderFactory = { directory, source, sampleRate in
             try SessionRecorder(directory: directory, source: source, sampleRate: sampleRate)
-        }
+        },
+        teardownDeadline: Duration = .seconds(3)
     ) {
         self.audioCapture = audioCapture
         self.makeLiveTranscription = makeLiveTranscription
@@ -104,7 +105,12 @@ final class RecordingCoordinator: ObservableObject {
         self.store = store
         self.audioRootDirectory = audioRootDirectory
         self.makeSessionRecorder = makeSessionRecorder
+        self.teardownDeadline = teardownDeadline
     }
+
+    /// How long the capture sessions are given to shut down before the recording
+    /// is finished without them. Injected so a test does not have to wait it out.
+    private let teardownDeadline: Duration
 
     func resetToIdle() {
         state = .idle
@@ -381,24 +387,44 @@ final class RecordingCoordinator: ObservableObject {
         elapsedTimer = nil
 
         let duration = recordingStart.map { Date().timeIntervalSince($0) } ?? 0
-        currentMeetingId = nil
         recordingStart = nil
 
-        // `stopCapture()` closes the relay under the same lock the relay
+        // `stopDelivery()` closes the relay under the same lock the relay
         // publishes from, so when it returns no `route` call is in progress and
         // no further one can start. Only after that is it safe to finish the
-        // consumers the router feeds.
-        await audioCapture.stopCapture()
+        // consumers the router feeds — and it is all that is needed for that,
+        // which is why the recording is closed here rather than after the
+        // capture sessions have been released.
+        audioCapture.stopDelivery()
         bufferCancellable?.cancel()
         bufferCancellable = nil
-
-        await finishLiveTranscription()
 
         for recorder in recorders.values { recorder.finish() }
         // Readable only now: `finish()` drains the writer's own queue, so this is
         // no longer racing the thread that would set it.
         let writeFailure = recorders.values.compactMap(\.writeError).first
         recorders.removeAll()
+
+        // Cleared only once the files are closed, and only from code that cannot
+        // suspend before reaching here. `finalizeAudioForTermination()` is the
+        // last-chance close for a termination that does not come through this
+        // path, and this is what arms it: clearing it any earlier disarmed it
+        // for the whole of the teardown below — exactly when a stuck teardown
+        // meant it was the only thing left to close the files.
+        currentMeetingId = nil
+
+        // Everything the recording promised is on disk by here. What is left is
+        // asking ScreenCaptureKit and the speech analyser to let go, and neither
+        // promises to answer: a stream that has already died can leave its
+        // `stopCapture()` suspended for the life of the process. Waiting on that
+        // unbounded is what left the app un-quittable, with a frozen timer in
+        // the menu bar and no way to reach it, so it gets a deadline. Missing it
+        // costs nothing the user can see: the process is either about to end, or
+        // starting a recording again, which stops these sources itself.
+        await withDeadline(teardownDeadline) { [self] in
+            await audioCapture.finishTeardown()
+            await finishLiveTranscription()
+        }
 
         guard store.fetch(id: id) != nil else {
             try? FileManager.default.removeItem(at: audioDirectory(for: id))

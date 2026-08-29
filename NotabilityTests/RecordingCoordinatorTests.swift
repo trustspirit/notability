@@ -711,6 +711,38 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertNil(meeting.audioDirectory)
     }
 
+    /// ScreenCaptureKit and the speech analyser are asked to let go of their
+    /// sessions on the way out, and neither promises to answer: a stream that has
+    /// already died can leave `stopCapture()` suspended for the life of the
+    /// process. Everything the recording promised is on disk before that is
+    /// asked for, so a teardown that never returns must cost nothing — and,
+    /// before this, it cost the whole app. The audio files stayed open with their
+    /// `moov` atom unwritten, the meeting was never marked, and quitting never
+    /// finished, which left a frozen timer in the menu bar and no way to reach it.
+    func test_saving_a_recording_survives_a_teardown_that_never_returns() async throws {
+        let env = makeSUT(teardownDeadline: .milliseconds(50))
+        try await env.sut.startRecording()
+        let meetingId = try XCTUnwrap(env.sut.currentMeetingId)
+        env.emitSpeech()
+        env.capture.blockTeardown()
+
+        let saved = expectation(description: "saveRecordingForLater returned")
+        Task {
+            await env.sut.saveRecordingForLater()
+            saved.fulfill()
+        }
+        await fulfillment(of: [saved], timeout: 5)
+
+        let meeting = try XCTUnwrap(env.store.fetch(id: meetingId))
+        let directory = try XCTUnwrap(meeting.audioDirectory)
+        XCTAssertTrue(
+            RecordedSessionAudio.isUsable(directory: directory),
+            "The audio has to be closed and readable whether or not the frameworks let go"
+        )
+        XCTAssertEqual(meeting.transcriptionError, ProcessingStatusMessage.quitDuringRecording)
+        XCTAssertEqual(env.sut.state, .idle)
+    }
+
     func test_saving_a_recording_that_failed_to_write_keeps_the_write_failure() async throws {
         let env = makeSUT(useFakeRecorders: true)
         try await env.sut.startRecording()
@@ -1139,7 +1171,10 @@ final class RecordingCoordinatorTests: XCTestCase {
         }
     }
 
-    private func makeSUT(useFakeRecorders: Bool = false) -> Environment {
+    private func makeSUT(
+        useFakeRecorders: Bool = false,
+        teardownDeadline: Duration = .seconds(3)
+    ) -> Environment {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -1164,7 +1199,8 @@ final class RecordingCoordinatorTests: XCTestCase {
             audioRootDirectory: audioRoot,
             makeSessionRecorder: recorders?.make ?? { directory, source, sampleRate in
                 try SessionRecorder(directory: directory, source: source, sampleRate: sampleRate)
-            }
+            },
+            teardownDeadline: teardownDeadline
         )
         return Environment(
             sut: sut,

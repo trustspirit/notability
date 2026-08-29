@@ -128,6 +128,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     }
 
     func stopCapture() async {
+        stopDelivery()
+        await finishTeardown()
+    }
+
+    func stopDelivery() {
         relay.close()
 
         if let observer = configurationObserver {
@@ -142,17 +147,28 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         flags.withLock { $0.isEchoCancellationEnabled = false }
         setCapturingMicrophone(false)
 
-        // Disowned before the await, not after it: from here on the stream is
-        // nobody's, so a death reported while it is shutting down changes
-        // nothing, and a caller looking at the flag during the shutdown is not
-        // told system audio is still running.
-        let stream = systemAudio.take()
+        // Disowned here rather than in `finishTeardown()`: from here on the
+        // stream is nobody's, so a death reported while it is shutting down
+        // changes nothing, and a caller looking at the flag during the shutdown
+        // is not told system audio is still running. It also means a teardown
+        // that is abandoned cannot leave the next recording looking at a stream
+        // this one is still holding.
+        pendingSystemAudioTeardown = systemAudio.take()
+    }
+
+    func finishTeardown() async {
+        guard let stream = pendingSystemAudioTeardown else { return }
+        pendingSystemAudioTeardown = nil
         do {
-            try await stream?.stopCapture()
+            try await stream.stopCapture()
         } catch {
             print("[AudioCaptureService] Stream stop error: \(error)")
         }
     }
+
+    /// The stream `stopDelivery()` disowned, waiting for someone to ask the
+    /// system to release it.
+    private var pendingSystemAudioTeardown: SCStream?
 
     // MARK: - Microphone
 

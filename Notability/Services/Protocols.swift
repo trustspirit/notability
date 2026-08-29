@@ -110,7 +110,34 @@ protocol AudioCaptureServiceProtocol {
 
     /// Stops every source. Once it returns, no further buffer is published.
     /// Safe to call when nothing is running, and safe to call twice.
+    ///
+    /// `stopDelivery()` followed by `finishTeardown()`. Callers that have
+    /// something to close of their own want those halves apart; callers that
+    /// only want the capture path gone want this.
     func stopCapture() async
+
+    /// Stops the flow of buffers and releases the microphone, synchronously.
+    ///
+    /// Everything it touches is the app's own, so it returns promptly and cannot
+    /// suspend. Once it returns no buffer is published and none can start being
+    /// published, which is what makes it safe to finish the consumers those
+    /// buffers were feeding — without first waiting on `finishTeardown()`, which
+    /// may never come back.
+    ///
+    /// On the main actor because it is the synchronous half: it mutates the
+    /// engine the capture path is built on, which is what the implementation is
+    /// isolated to in the first place. `async` requirements can hop there on
+    /// their own; this one has to be declared there.
+    @MainActor func stopDelivery()
+
+    /// Releases the operating system's capture sessions.
+    ///
+    /// Split from `stopDelivery()` because this half asks frameworks to let go
+    /// and they do not promise to answer: a ScreenCaptureKit stream that has
+    /// already died can leave its `stopCapture()` suspended for the life of the
+    /// process. Nothing the app promised the user depends on this returning, so
+    /// callers on the way out should bound how long they wait for it.
+    func finishTeardown() async
 }
 
 enum LiveTranscriptionEvent: Equatable {
