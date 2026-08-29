@@ -340,4 +340,86 @@ final class CaptureBufferRelayTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Levels
+
+    /// Levels drive the waveform, and both sources publish onto one stream. If
+    /// each send replaced the last, the bar would show whichever source
+    /// happened to deliver last rather than what the meeting sounds like.
+    private func collectLevels(from sut: CaptureBufferRelay) -> LevelCollector {
+        let collector = LevelCollector()
+        sut.levelPublisher
+            .sink { collector.append($0) }
+            .store(in: &cancellables)
+        return collector
+    }
+
+    private final class LevelCollector {
+        private let lock = NSLock()
+        private var storage: [Float] = []
+        var values: [Float] { lock.withLock { storage } }
+        var last: Float { values.last ?? -1 }
+        func append(_ value: Float) { lock.withLock { storage.append(value) } }
+    }
+
+    func test_a_silent_source_does_not_pull_the_level_down() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collectLevels(from: sut)
+        sut.open()
+
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.5), from: .microphone)
+        let afterMic = collector.last
+        sut.send(AudioFixtures.silence(seconds: 0.1), from: .systemAudio)
+
+        XCTAssertGreaterThan(afterMic, 0.1, "A loud microphone buffer should raise the level")
+        XCTAssertEqual(
+            collector.last,
+            afterMic,
+            accuracy: 0.001,
+            "Silence from the other source must not erase the microphone's level"
+        )
+    }
+
+    func test_the_louder_source_sets_the_level() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collectLevels(from: sut)
+        sut.open()
+
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.2), from: .microphone)
+        let quiet = collector.last
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.8), from: .systemAudio)
+
+        XCTAssertGreaterThan(collector.last, quiet, "The louder source should win")
+    }
+
+    /// A source that stops delivering — a dead stream, a revoked permission —
+    /// must not hold the waveform up at the level it left behind.
+    func test_a_source_that_stopped_delivering_stops_counting() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collectLevels(from: sut)
+        sut.open()
+
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.8), from: .systemAudio)
+        XCTAssertGreaterThan(collector.last, 0.1)
+
+        clock.advance(by: 2.0)
+        sut.send(AudioFixtures.silence(seconds: 0.1), from: .microphone)
+
+        XCTAssertLessThan(collector.last, 0.01, "A stale level should have aged out")
+    }
+
+    func test_open_forgets_the_levels_of_the_previous_recording() {
+        let sut = CaptureBufferRelay(sampleRate: 16_000)
+        let collector = collectLevels(from: sut)
+
+        sut.open()
+        sut.send(AudioFixtures.tone(seconds: 0.1, amplitude: 0.8), from: .systemAudio)
+        sut.close()
+
+        sut.open()
+        sut.send(AudioFixtures.silence(seconds: 0.1), from: .microphone)
+
+        XCTAssertLessThan(collector.last, 0.01, "The new recording started from the old level")
+    }
 }

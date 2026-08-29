@@ -73,7 +73,21 @@ final class CaptureBufferRelay: @unchecked Sendable {
         /// buffer, which is the one that establishes where on the shared
         /// timeline this source's audio resumes.
         var needsOrigin = true
+        /// RMS of this source's most recent buffer, and when it arrived. Held
+        /// per source so the published level can be the meeting's, not
+        /// whichever source delivered last; see `combinedLevel`.
+        var level: Float = 0
+        var levelAt: TimeInterval = -.greatestFiniteMagnitude
     }
+
+    /// How long a source's last level keeps counting toward the published one.
+    ///
+    /// Both sources deliver every 10–20 ms while they are alive, so this is
+    /// never reached in normal capture. It exists for the source that stops
+    /// delivering without saying so — a dead stream, a revoked permission —
+    /// whose final buffer would otherwise hold the waveform up for the rest of
+    /// the meeting.
+    private static let levelStaleAfter: TimeInterval = 0.5
 
     private struct State {
         var isOpen = false
@@ -170,9 +184,30 @@ final class CaptureBufferRelay: @unchecked Sendable {
             case .systemAudio:
                 startTime = Self.stamp(&state.systemAudio, buffer.frameLength, elapsed, sampleRate)
             }
+            switch source {
+            case .microphone:
+                state.microphone.level = level
+                state.microphone.levelAt = elapsed
+            case .systemAudio:
+                state.systemAudio.level = level
+                state.systemAudio.levelAt = elapsed
+            }
             buffers.send(TaggedAudioBuffer(source: source, buffer: buffer, startTime: startTime))
-            levels.send(level)
+            levels.send(Self.combinedLevel(state, at: elapsed))
         }
+    }
+
+    /// The loudest source that is still delivering.
+    ///
+    /// Max rather than a sum: the waveform answers "is anyone talking", and
+    /// summing would read two quiet sources as one loud one and clip whenever
+    /// both are active.
+    private static func combinedLevel(_ state: State, at elapsed: TimeInterval) -> Float {
+        var level: Float = 0
+        for source in [state.microphone, state.systemAudio] where elapsed - source.levelAt < levelStaleAfter {
+            level = max(level, source.level)
+        }
+        return level
     }
 
     /// Returns the buffer's start time on the shared timeline, seeding the
