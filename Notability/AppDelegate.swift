@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var store: MeetingStore!
     private(set) var coordinator: RecordingCoordinator!
     private var stateObserver: Task<Void, Never>?
+    /// Set once a quit prompt has been answered with a choice that has work to
+    /// do, and never cleared: the only way out of it is termination.
+    private var isQuitting = false
     private let relauncher = Relauncher(launchSuccessor: Relauncher.launchAnotherInstance)
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
@@ -145,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Check for Updates\u{2026}", action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(requestQuit), keyEquivalent: "q"))
         popUpStatusBarMenu(menu)
     }
 
@@ -155,8 +158,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Notes", action: #selector(openNotes), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(requestQuit), keyEquivalent: "q"))
         popUpStatusBarMenu(menu)
+    }
+
+    /// Quits from the next pass of the run loop rather than from the menu item's
+    /// own action.
+    ///
+    /// A menu item's action runs inside the menu's tracking session, so calling
+    /// `terminate:` there puts the quit prompt — and everything the answer
+    /// starts — inside a nested event loop belonging to a menu that is already
+    /// on its way out. Letting the menu finish first means quitting from the
+    /// menu bar behaves exactly like quitting from anywhere else.
+    @objc private func requestQuit() {
+        DispatchQueue.main.async { NSApp.terminate(nil) }
     }
 
     // Modern replacement for the deprecated NSStatusItem.popUpMenu(_:). Anchors
@@ -314,9 +329,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        switch QuitPolicy.decision(for: coordinator.state) {
+        switch QuitPolicy.decision(for: coordinator.state, isQuitting: isQuitting) {
         case .quitNow:
             return .terminateNow
+        case .alreadyQuitting:
+            // The work agreed to by the first quit is still running and will
+            // terminate the app itself when it finishes.
+            return .terminateCancel
         case .ask(let prompt):
             // A dismissal that matches no button is treated as "don't quit",
             // which is the only safe reading while something is in flight.
@@ -360,6 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .cancelQuit:
             return .terminateCancel
         case .quitAfter(let work):
+            isQuitting = true
             Task {
                 switch work {
                 case .stopRecordingAndProcess:
@@ -367,9 +387,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .saveRecordedAudio:
                     await coordinator.saveRecordingForLater()
                 }
-                NSApp.reply(toApplicationShouldTerminate: true)
+                // The state the work leaves behind is one `QuitPolicy` answers
+                // with `.quitNow`, so this second request terminates rather
+                // than prompting again.
+                NSApp.terminate(nil)
             }
-            return .terminateLater
+            // Cancel now and terminate later on our own, rather than answering
+            // `.terminateLater` and replying when the work is done.
+            //
+            // `.terminateLater` blocks the main thread inside an AppKit event
+            // loop until `reply(toApplicationShouldTerminate:)` arrives, and the
+            // work that would send it is main-actor isolated — the recording
+            // coordinator, like everything else here, runs on the main actor. So
+            // the reply waits on work that cannot start until the reply arrives,
+            // and the app hangs with its audio still running and its status item
+            // still in the menu bar, with no Dock icon to quit it from.
+            //
+            // Cancelling releases the main thread, the work runs, and quitting
+            // is re-requested once there is nothing left to ask about.
+            return .terminateCancel
         }
     }
 

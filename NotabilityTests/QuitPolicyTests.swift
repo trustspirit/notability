@@ -136,4 +136,39 @@ final class QuitPolicyTests: XCTestCase {
             options: [.regularExpression, .caseInsensitive]
         ) != nil
     }
+
+    // MARK: - Quitting already agreed to
+
+    /// The first answer already decided what happens to the recording, and the
+    /// work carrying it out is still running. Asking again would offer to
+    /// discard what the user just chose to keep — and, before this existed,
+    /// a second Quit while the first was in flight re-entered the prompt.
+    func test_a_second_quit_request_does_not_ask_again() {
+        for state in Self.everyState {
+            XCTAssertEqual(
+                QuitPolicy.decision(for: state, isQuitting: true),
+                .alreadyQuitting,
+                "\(state) prompted again while already quitting"
+            )
+        }
+    }
+
+    func test_not_quitting_yet_decides_from_the_state_as_before() {
+        XCTAssertEqual(QuitPolicy.decision(for: .idle, isQuitting: false), .quitNow)
+        guard case .ask = QuitPolicy.decision(for: .recording(elapsed: 12), isQuitting: false) else {
+            return XCTFail("Recording should still prompt when no quit is in flight")
+        }
+    }
+
+    private static var everyState: [RecordingState] {
+        let id = UUID()
+        return [
+            .idle,
+            .recording(elapsed: 12),
+            .transcribing(meetingId: id),
+            .generatingNotes(meetingId: id),
+            .done(meetingId: id),
+            .failed("rate limited")
+        ]
+    }
 }

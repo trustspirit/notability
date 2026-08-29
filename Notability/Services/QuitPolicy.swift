@@ -14,7 +14,14 @@ import Foundation
 /// and then left the meeting and its audio behind, so the string and the
 /// behaviour are defined together and asserted together.
 enum QuitPolicy {
-    static func decision(for state: RecordingState) -> QuitDecision {
+    /// - Parameter isQuitting: whether a previous quit was agreed to and its
+    ///   work is still running. A second request while that is in flight must
+    ///   not prompt again: the first answer already decided what happens to the
+    ///   recording, and asking again would offer to discard work the user has
+    ///   already chosen to keep.
+    static func decision(for state: RecordingState, isQuitting: Bool = false) -> QuitDecision {
+        if isQuitting { return .alreadyQuitting }
+
         switch state {
         case .idle, .done, .failed:
             // Nothing is running and nothing is half-written: the recording's
@@ -76,6 +83,9 @@ enum QuitPolicy {
 enum QuitDecision: Equatable {
     case quitNow
     case ask(QuitPrompt)
+    /// Quitting was already agreed to and is under way. Nothing to ask and
+    /// nothing to do but let the work that is running finish the job.
+    case alreadyQuitting
 }
 
 struct QuitPrompt: Equatable {
