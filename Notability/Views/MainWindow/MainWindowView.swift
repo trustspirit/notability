@@ -150,7 +150,17 @@ private struct LiveRecordingView: View {
     /// not being recorded.
     @ViewBuilder
     private var captureWarning: some View {
-        if !coordinator.systemAudioAvailable {
+        if coordinator.recordingMode == .microphoneOnly {
+            // Not a WarningBanner: the user chose this, and there is nothing to
+            // fix. Saying so anyway is the difference between a status line and
+            // nagging someone about their own decision.
+            InfoBanner(
+                title: "Microphone only",
+                message: "Recording your microphone alone, as requested. The other participants' audio is not being captured.",
+                systemImage: "mic.fill"
+            )
+            .padding(.horizontal, Spacing.lg)
+        } else if !coordinator.systemAudioAvailable {
             WarningBanner(
                 title: "System audio unavailable",
                 message: "Only your microphone is being captured. Screen Recording access is needed to hear the other participants, and Notability has to restart before macOS will grant it.",

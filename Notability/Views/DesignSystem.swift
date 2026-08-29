@@ -127,6 +127,37 @@ struct WarningBanner: View {
     }
 }
 
+/// The same shape as `WarningBanner` in a neutral colour, for stating what the
+/// app is doing rather than what is wrong with it. Carries no action, because a
+/// state the user chose has nothing to fix.
+struct InfoBanner: View {
+    let title: String
+    let message: String
+    var systemImage: String = "info.circle.fill"
+
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: Spacing.sm)
+        }
+        .padding(Spacing.md)
+        .background(BrandColor.surface, in: RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                .strokeBorder(BrandColor.border, lineWidth: 0.5)
+        )
+    }
+}
+
 // MARK: - Branded empty state
 
 struct BrandedEmptyState: View {

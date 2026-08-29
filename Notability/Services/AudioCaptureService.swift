@@ -96,7 +96,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
 
     // MARK: - Lifecycle
 
-    func startCapture() async throws {
+    func startCapture(mode: RecordingMode) async throws {
         await stopCapture()
 
         captureGeneration += 1
@@ -119,7 +119,11 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
         }
 
         // System audio is optional: the meeting is still worth recording with
-        // just the microphone when Screen Recording permission is missing.
+        // just the microphone when Screen Recording permission is missing, and
+        // `.microphoneOnly` is the user saying it is not wanted at all. Not
+        // attempting it also means no permission prompt, which is the point for
+        // an in-person meeting where there is nothing on screen to record.
+        guard mode.capturesSystemAudio else { return }
         await startSystemAudioCapture()
     }
 

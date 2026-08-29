@@ -51,6 +51,13 @@ final class ModelSettings: ObservableObject {
         }
     }
 
+    /// Which sources the next recording captures. Set from either place a
+    /// recording can be started, so the sidebar toggle and the menu bar always
+    /// agree about what the next one will do.
+    @Published var recordingMode: RecordingMode {
+        didSet { defaults.set(recordingMode.rawValue, forKey: "recordingMode") }
+    }
+
     /// BCP-47 identifier handed to the on-device transcriber, which — unlike the
     /// API — has no auto-detect mode and needs a concrete locale.
     var effectiveTranscriptionLocaleIdentifier: String {
@@ -62,6 +69,11 @@ final class ModelSettings: ObservableObject {
         noteModel = userDefaults.string(forKey: "noteModel") ?? "gpt-5.5"
         transcriptionLanguage = userDefaults.string(forKey: "transcriptionLanguage") ?? "ko"
         noteInstructions = userDefaults.string(forKey: "noteInstructions") ?? ""
+        // Falls back to capturing everything rather than to the stored string,
+        // because an unrecognised value would otherwise silently record half of
+        // every meeting, and no later launch can recover the missing half.
+        recordingMode = userDefaults.string(forKey: "recordingMode")
+            .flatMap(RecordingMode.init(rawValue:)) ?? .microphoneAndSystem
 
         // Guarded on presence so this is a one-time cleanup on the first launch
         // after upgrading. `removeObject` takes the write path and posts a change

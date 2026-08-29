@@ -20,6 +20,34 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(env.capture.startCallCount, 1)
     }
 
+    func test_start_asks_the_capture_service_for_the_mode_it_was_given() async throws {
+        let env = makeSUT()
+
+        try await env.sut.startRecording(mode: .microphoneOnly)
+
+        XCTAssertEqual(env.capture.lastStartMode, .microphoneOnly)
+    }
+
+    func test_start_captures_system_audio_by_default() async throws {
+        let env = makeSUT()
+
+        try await env.sut.startRecording()
+
+        XCTAssertEqual(env.capture.lastStartMode, .microphoneAndSystem)
+    }
+
+    /// The warning banner has to tell "the user asked for microphone only" apart
+    /// from "system audio was wanted and could not be had", and those look
+    /// identical through `systemAudioAvailable` alone.
+    func test_the_mode_is_published_for_the_ui() async throws {
+        let env = makeSUT()
+        XCTAssertEqual(env.sut.recordingMode, .microphoneAndSystem)
+
+        try await env.sut.startRecording(mode: .microphoneOnly)
+
+        XCTAssertEqual(env.sut.recordingMode, .microphoneOnly)
+    }
+
     func test_start_fails_when_microphone_is_unavailable() async {
         let env = makeSUT()
         env.capture.isCapturingMicrophone = false

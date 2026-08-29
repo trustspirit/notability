@@ -8,6 +8,7 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 ## Features
 
 - **Microphone and system audio capture** — ScreenCaptureKit records any app's audio without extra drivers, alongside your own voice from the microphone. macOS's echo canceller is enabled on the microphone to keep the far end from being recorded twice when you are on speakers, and the app tells you when it could not be.
+- **Microphone-only recording** — For in-person meetings there is nothing on screen to capture, so the mode can be set before recording from the sidebar checkbox or the menu bar's **Start Recording (Microphone Only)**. It asks for no Screen Recording permission and reports no missing system audio. Speaker names are left off these transcripts: with no system track there is no way to tell the local user's voice from anyone else's around the same microphone, so speakers are separated but labelled A, B, C rather than risking a confident wrong name.
 - **Live captions, on-device** — Apple's SpeechAnalyzer transcribes as you speak. No audio leaves your Mac for captions, and there is no per-minute cost.
 - **Speaker-separated final transcript** — When the meeting ends, the full recording is transcribed once with `gpt-4o-transcribe-diarize`, which labels each turn. Seeing the whole meeting at once gives far better punctuation and terminology than transcribing short fragments.
 - **AI-generated notes** — `gpt-5.5` by default then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
@@ -49,7 +50,7 @@ withheld rather than installed and broken.
    it unreliably for ad-hoc builds. If it is missing, the recording view says so and offers
    **Fix Permission**, which walks you through Privacy & Security → Screen Recording and
    relaunches — the relaunch is required, since macOS will not grant access to a running process
-5. Without Screen Recording, recording still works — it just captures your microphone alone
+5. Without Screen Recording, recording still works — it just captures your microphone alone. If that is what you want, choose microphone-only instead and the prompt never appears
 
 > **Note:** The first recording in a given language downloads Apple's on-device speech model,
 > which can take a few minutes. Recording starts immediately and captions appear once the

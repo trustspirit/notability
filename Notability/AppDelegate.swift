@@ -130,7 +130,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showIdleMenu() {
         let menu = NSMenu()
+        // Two start items rather than a mode submenu plus one start item: the
+        // choice is only ever made on the way into a recording, and this way
+        // making it costs the same single click as not making it.
         menu.addItem(NSMenuItem(title: "Start Recording", action: #selector(startRecording), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(
+            title: "Start Recording (Microphone Only)",
+            action: #selector(startMicrophoneOnlyRecording),
+            keyEquivalent: ""
+        ))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Notes", action: #selector(openNotes), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ","))
@@ -164,9 +172,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startRecording() {
+        start(mode: .microphoneAndSystem)
+    }
+
+    @objc private func startMicrophoneOnlyRecording() {
+        start(mode: .microphoneOnly)
+    }
+
+    /// Starting from the menu also sets the mode, so the sidebar toggle shows
+    /// what the last recording did rather than contradicting it.
+    private func start(mode: RecordingMode) {
+        ModelSettings.shared.recordingMode = mode
         Task {
             do {
-                try await coordinator.startRecording()
+                try await coordinator.startRecording(mode: mode)
             } catch {
                 showRecordingError(error)
             }

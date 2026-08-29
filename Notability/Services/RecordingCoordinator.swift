@@ -27,6 +27,15 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var visibleLiveTranscript: [TranscriptChunk] = []
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var systemAudioAvailable = true
+
+    /// The mode the current — or most recent — recording was started in.
+    ///
+    /// Read with `systemAudioAvailable` rather than instead of it: together they
+    /// separate "the user asked for microphone only" from "system audio was
+    /// wanted and could not be had", which are the same state to everything
+    /// downstream and opposite states to the person being shown a warning.
+    /// Outlives the recording because processing needs it too; see `transcribe`.
+    @Published private(set) var recordingMode: RecordingMode = .microphoneAndSystem
     /// False when the system echo canceller could not be started. This only
     /// costs anything while system audio is captured too, and only on speakers:
     /// the far end then reaches the microphone track *and* arrives on its own
@@ -111,7 +120,7 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Recording
 
-    func startRecording() async throws {
+    func startRecording(mode: RecordingMode = .microphoneAndSystem) async throws {
         // Claimed before the first suspension, not after. startCapture() can take
         // seconds waiting on a permission prompt, and the state stays .idle for
         // all of it, so the menu item that gates on .idle is still live. A second
@@ -128,7 +137,8 @@ final class RecordingCoordinator: ObservableObject {
         liveCaptionNotice = nil
         recordingInterruptedNotice = nil
 
-        try await audioCapture.startCapture()
+        recordingMode = mode
+        try await audioCapture.startCapture(mode: mode)
         guard audioCapture.isCapturingMicrophone else {
             await audioCapture.stopCapture()
             throw CaptureAvailabilityError.microphoneUnavailable
@@ -579,12 +589,15 @@ final class RecordingCoordinator: ObservableObject {
         let hasSystemTrack = tracks.contains(systemURL)
         // A missing reference costs only speaker naming: the local user's turns
         // still get separated, they just get a letter instead of a label.
-        let reference = await Task.detached(priority: .userInitiated) {
-            try? SpeakerReferenceExtractor.extract(
-                micURL: micURL,
-                systemURL: hasSystemTrack ? systemURL : nil
-            )
-        }.value
+        let mode = recordingMode
+        let reference: Data? = Self.shouldExtractSpeakerReference(mode: mode)
+            ? await Task.detached(priority: .userInitiated) {
+                try? SpeakerReferenceExtractor.extract(
+                    micURL: micURL,
+                    systemURL: hasSystemTrack ? systemURL : nil
+                )
+            }.value
+            : nil
 
         let language = ModelSettings.shared.transcriptionLanguage
         return try await finalTranscription.transcribe(
@@ -592,6 +605,23 @@ final class RecordingCoordinator: ObservableObject {
             speakerReference: reference,
             language: language.isEmpty ? nil : language
         )
+    }
+
+    /// Whether the microphone track is trustworthy enough to name a speaker
+    /// from.
+    ///
+    /// `SpeakerReferenceExtractor` identifies the local user as whoever talks
+    /// while the system track is silent. With no system track at all that test
+    /// passes for anyone, so a recording that never wanted one — an in-person
+    /// meeting, several people around one microphone — would label whoever
+    /// spoke first as the local user for the entire transcript. An anonymous
+    /// letter is a smaller error than a confident wrong name.
+    ///
+    /// A recording that asked for system audio and did not get it is a different
+    /// case and keeps its reference: there was still a far end, it just arrived
+    /// through the speakers, so the microphone track is still the local user's.
+    nonisolated static func shouldExtractSpeakerReference(mode: RecordingMode) -> Bool {
+        mode.capturesSystemAudio
     }
 
     private func fail(meetingId: UUID, transcriptionError: String, wasInterrupted: Bool = false) {

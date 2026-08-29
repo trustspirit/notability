@@ -4,6 +4,7 @@ import AppKit
 struct MeetingSidebarView: View {
     @EnvironmentObject var store: MeetingStore
     @EnvironmentObject var coordinator: RecordingCoordinator
+    @ObservedObject private var settings = ModelSettings.shared
     @Binding var selectedMeetingId: UUID?
     @State private var search = ""
     @State private var pendingDeletion: Meeting?
@@ -127,16 +128,40 @@ struct MeetingSidebarView: View {
         }
     }
 
+    /// Offered before the recording rather than during it, because the choice
+    /// cannot be revised once capture has begun — a meeting recorded without the
+    /// far end has no second copy to recover it from.
+    private var microphoneOnlyToggle: some View {
+        Toggle(isOn: Binding(
+            get: { settings.recordingMode == .microphoneOnly },
+            set: { settings.recordingMode = $0 ? .microphoneOnly : .microphoneAndSystem }
+        )) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Microphone only")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Skips the other participants' audio")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // MARK: - Record button
 
     private var recordButton: some View {
         Group {
             switch coordinator.state {
             case .idle, .done, .failed:
-                PrimaryActionButton(title: "Record", systemImage: "mic.fill", tint: BrandColor.accent) {
-                    Task {
-                        do { try await coordinator.startRecording() }
-                        catch { await MainActor.run { showCaptureError(error) } }
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    microphoneOnlyToggle
+                    PrimaryActionButton(title: "Record", systemImage: "mic.fill", tint: BrandColor.accent) {
+                        let mode = settings.recordingMode
+                        Task {
+                            do { try await coordinator.startRecording(mode: mode) }
+                            catch { await MainActor.run { showCaptureError(error) } }
+                        }
                     }
                 }
             case .recording:

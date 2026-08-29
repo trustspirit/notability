@@ -106,7 +106,7 @@ protocol AudioCaptureServiceProtocol {
     ///
     /// Must not overlap with another `startCapture()` or `stopCapture()` — one
     /// recording at a time.
-    func startCapture() async throws
+    func startCapture(mode: RecordingMode) async throws
 
     /// Stops every source. Once it returns, no further buffer is published.
     /// Safe to call when nothing is running, and safe to call twice.

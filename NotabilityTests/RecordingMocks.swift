@@ -72,8 +72,13 @@ final class MockAudioCaptureService: AudioCaptureServiceProtocol, @unchecked Sen
         startGateContinuation?.finish()
     }
 
-    func startCapture() async throws {
+    /// The mode of the most recent `startCapture`, so a test can assert what
+    /// the coordinator asked for rather than what it happened to record.
+    private(set) var lastStartMode: RecordingMode?
+
+    func startCapture(mode: RecordingMode) async throws {
         calls.withLock { $0.start += 1 }
+        lastStartMode = mode
         if let startGate {
             onStartSuspended?()
             for await _ in startGate {}
