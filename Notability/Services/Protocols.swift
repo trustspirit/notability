@@ -86,8 +86,8 @@ protocol AudioCaptureServiceProtocol {
     /// `startCapture()` succeeds either way, because a recording without echo
     /// cancellation is still worth having. False means meeting audio coming back
     /// through the speakers is also in the microphone track, so the mix carries
-    /// the far end twice. Cost is unaffected — the mix is one upload whose length
-    /// is the wall clock — but the duplicate can be transcribed twice and
+    /// the far end twice. Cost is unaffected — the mix is billed by its length,
+    /// which is the wall clock either way — but the duplicate can be transcribed twice and
     /// attributed to the local speaker, whose voice the speaker reference has
     /// already named. Reflects the attempt made when capture started.
     var isEchoCancellationEnabled: Bool { get }

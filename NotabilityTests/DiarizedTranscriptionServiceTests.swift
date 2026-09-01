@@ -308,6 +308,19 @@ final class DiarizedTranscriptionServiceTests: XCTestCase {
             XCTAssertEqual(client.requestCount, 1)
         }
     }
+
+    func testUploadTooLargeMessageDoesNotPromiseALengthLimit() {
+        // It used to name "about 2 hours 20 minutes", derived from the 25 MB
+        // upload limit. That was never the binding constraint — the model
+        // refuses anything over 1400 seconds long before 25 MB is reached —
+        // and segmentation now keeps every request far under both.
+        let error = DiarizedTranscriptionService.ServiceError.httpError(413, nil)
+
+        XCTAssertEqual(
+            error.errorDescription,
+            "The recording was too large to upload. Your audio has been kept, so you can retry."
+        )
+    }
 }
 
 /// Returns a plain (non-HTTP) URLResponse to exercise the guard that rejects it.

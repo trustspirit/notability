@@ -66,8 +66,10 @@ withheld rather than installed and broken.
 | Completion notification | Click to view the finished notes |
 | Click the icon after it finishes | Opens the notes window |
 
-> **Note:** The final transcript is one upload, which caps a meeting at roughly 2 hours 20
-> minutes. Longer recordings fail with a "too long" message and are kept on disk.
+> **Note:** The diarization model accepts at most 1400 seconds of audio per request, so a
+> meeting longer than about 23 minutes is cut at a pause and uploaded in several pieces, then
+> stitched back onto one timeline. Speaker letters restart in each piece — the local speaker is
+> the exception, and keeps one name throughout.
 
 ## Tech Stack
 
@@ -97,8 +99,8 @@ open Notability.xcodeproj
 ## Privacy
 
 - Live captions are produced entirely on your Mac. No audio is sent anywhere for them.
-- The recording is uploaded to the OpenAI API once, after the meeting ends, for the final
-  transcript; the transcript is then sent for note generation (subject to OpenAI's Privacy Policy).
+- The recording is uploaded to the OpenAI API after the meeting ends, for the final transcript
+  — once, or in a few pieces if the meeting ran long; the transcript is then sent for note generation (subject to OpenAI's Privacy Policy).
 - The recording is deleted from disk as soon as notes are generated successfully, and when you
   delete the meeting. It is kept only while a meeting still needs it — because a stage failed, or
   because quitting or a crash stopped one before it finished — so you can retry without

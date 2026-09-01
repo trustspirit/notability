@@ -19,7 +19,7 @@ final class DiarizedTranscriptionService: FinalTranscriptionServiceProtocol {
             case .httpError(let code, let detail):
                 switch code {
                 case 401: return "Invalid OpenAI API key (HTTP 401). Go to Settings and verify your key."
-                case 413: return "The recording is too long to upload (the limit is about 2 hours 20 minutes). Your audio has been kept."
+                case 413: return "The recording was too large to upload. Your audio has been kept, so you can retry."
                 case 429: return "OpenAI rate limit or quota exceeded (HTTP 429)."
                 default:  return "Transcription failed with HTTP \(code)\(detail.map { ": \($0)" } ?? "")."
                 }

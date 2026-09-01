@@ -39,8 +39,8 @@ final class RecordingCoordinator: ObservableObject {
     /// False when the system echo canceller could not be started. This only
     /// costs anything while system audio is captured too, and only on speakers:
     /// the far end then reaches the microphone track *and* arrives on its own
-    /// track, so the mix carries it twice. Cost is unaffected — the mix is one
-    /// upload whose length is the wall clock — but the duplicate can be
+    /// track, so the mix carries it twice. Cost is unaffected — the mix is billed by
+    /// its length, which is the wall clock either way — but the duplicate can be
     /// transcribed twice and attributed to the local speaker, whose voice the
     /// speaker reference has already named. With no system track there is only
     /// ever one copy, which is why the recording view shows this warning only

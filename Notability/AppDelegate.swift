@@ -45,7 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A live transcription service is single use: its event stream ends
             // when the recording does, so each recording needs a new one.
             makeLiveTranscription: { LiveTranscriptionService() },
-            finalTranscription: DiarizedTranscriptionService(),
+            // The diarization model refuses a request carrying more than 1400
+            // seconds of audio, so anything over about 23 minutes has to go up
+            // in pieces. The wrapper is what cuts it and stitches the results
+            // back onto one timeline.
+            finalTranscription: SegmentedTranscriptionService(inner: DiarizedTranscriptionService()),
             noteGeneration: NoteGenerationService(),
             store: store
         )
