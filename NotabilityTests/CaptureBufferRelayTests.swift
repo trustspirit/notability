@@ -184,11 +184,80 @@ final class CaptureBufferRelayTests: XCTestCase {
         XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1, 0.2])
     }
 
+    // MARK: - Correcting from capture times
+
+    /// A source that stops delivering for a while without anyone saying so —
+    /// a stream that pauses across silence — must leave that time in its
+    /// track, or every later buffer slides earlier than the other source.
+    func test_an_unannounced_gap_is_restored_from_capture_times() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .systemAudio, capturedAt: 0)
+        clock.advance(by: 3.0)
+        sut.send(tenth(), from: .systemAudio, capturedAt: 3.0)
+
+        XCTAssertEqual(collector.startTimes(of: .systemAudio), [0, 3.0])
+    }
+
+    /// The case counting frames gets right and wall-clock time gets wrong: a
+    /// backlog that arrives in a burst carries capture times that are on time,
+    /// so nothing moves.
+    func test_a_late_burst_with_on_time_capture_times_does_not_move() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone, capturedAt: 0)
+        clock.advance(by: 3.0)
+        for index in 1...30 {
+            sut.send(tenth(), from: .microphone, capturedAt: Double(index) * 0.1)
+        }
+
+        let times = collector.startTimes(of: .microphone)
+        XCTAssertEqual(times.count, 31)
+        XCTAssertEqual(times.last ?? 0, 3.0, accuracy: 1e-9)
+    }
+
+    /// Small disagreements between a device's clock and the host's are jitter,
+    /// and correcting each one would chop the track into tiny silences.
+    func test_a_lag_under_the_threshold_is_left_alone() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone, capturedAt: 0)
+        clock.advance(by: 0.4)
+        sut.send(tenth(), from: .microphone, capturedAt: 0.4)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1])
+    }
+
+    func test_a_capture_time_on_some_other_clock_is_ignored() {
+        let clock = TestMonotonicClock()
+        let sut = CaptureBufferRelay(sampleRate: 16_000, clock: clock.read)
+        let collector = collect(from: sut)
+        sut.open()
+
+        clock.advance(by: 0.1)
+        sut.send(tenth(), from: .microphone, capturedAt: 0)
+        sut.send(tenth(), from: .microphone, capturedAt: 50_000)
+
+        XCTAssertEqual(collector.startTimes(of: .microphone), [0, 0.1])
+    }
+
     // MARK: - Resynchronizing after an interruption
 
     /// An input-device switch restarts the engine, and the microphone delivers
     /// nothing while it does. Counting frames would splice that interval out of
-    /// `mic.m4a` and slide everything after it ahead of system audio, which
+    /// `mic.caf` and slide everything after it ahead of system audio, which
     /// kept recording — and the error compounds with every switch.
     func test_a_source_resumes_where_the_clock_says_after_an_interruption() {
         let clock = TestMonotonicClock()

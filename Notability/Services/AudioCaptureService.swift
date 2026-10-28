@@ -290,9 +290,12 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     /// main-actor isolation. The audio engine calls it on its own realtime
     /// thread, and everything it reaches carries its own lock.
     private nonisolated func makeTapBlock() -> AVAudioNodeTapBlock {
-        { [weak self] buffer, _ in
+        { [weak self] buffer, when in
             guard let self else { return }
-            self.publish(buffer, from: .microphone, through: self.microphoneConverter)
+            let capturedAt = when.isHostTimeValid
+                ? AVAudioTime.seconds(forHostTime: when.hostTime)
+                : nil
+            self.publish(buffer, from: .microphone, through: self.microphoneConverter, capturedAt: capturedAt)
         }
     }
 
@@ -388,7 +391,14 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             into: buffer.mutableAudioBufferList
         )
 
-        publish(buffer, from: .systemAudio, through: systemAudioConverter)
+        // Stamped on the host time clock, the same one the relay reads.
+        let presentation = sampleBuffer.presentationTimeStamp
+        publish(
+            buffer,
+            from: .systemAudio,
+            through: systemAudioConverter,
+            capturedAt: presentation.isValid ? presentation.seconds : nil
+        )
     }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -428,7 +438,8 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
     private nonisolated func publish(
         _ buffer: AVAudioPCMBuffer,
         from source: AudioSource,
-        through converter: ResamplingConverter
+        through converter: ResamplingConverter,
+        capturedAt: TimeInterval?
     ) {
         guard var converted = converter.convert(buffer) else { return }
 
@@ -441,7 +452,7 @@ final class AudioCaptureService: NSObject, AudioCaptureServiceProtocol,
             converted = owned
         }
 
-        relay.send(converted, from: source)
+        relay.send(converted, from: source, capturedAt: capturedAt)
     }
 
     private nonisolated static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

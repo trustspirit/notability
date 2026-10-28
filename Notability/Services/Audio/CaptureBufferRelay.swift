@@ -164,7 +164,13 @@ final class CaptureBufferRelay: @unchecked Sendable {
     /// Call synchronously from the capture callback that produced the buffer,
     /// one thread per source. `buffer` must be storage the caller owns and does
     /// not reuse: subscribers hold on to it after this returns.
-    func send(_ buffer: AVAudioPCMBuffer, from source: AudioSource) {
+    ///
+    /// `capturedAt` is when the buffer's first sample was captured, read from
+    /// the same monotonic clock as `clock` — the host time the audio engine and
+    /// ScreenCaptureKit stamp their buffers with. It is what lets a gap in
+    /// delivery be told apart from a late callback; without it the timeline
+    /// is only ever corrected by `resynchronize(_:)`.
+    func send(_ buffer: AVAudioPCMBuffer, from source: AudioSource, capturedAt: TimeInterval? = nil) {
         // Zero frames would repeat the previous timestamp, and SpeechAnalyzer
         // rejects timecodes that do not strictly increase.
         guard buffer.frameLength > 0 else { return }
@@ -177,12 +183,15 @@ final class CaptureBufferRelay: @unchecked Sendable {
         state.withLockUnchecked { state in
             guard state.isOpen else { return }
             let elapsed = now - state.openedAt
+            let captured = capturedAt.flatMap {
+                abs(now - $0) < Self.implausibleCaptureOffset ? $0 - state.openedAt : nil
+            }
             let startTime: TimeInterval
             switch source {
             case .microphone:
-                startTime = Self.stamp(&state.microphone, buffer.frameLength, elapsed, sampleRate)
+                startTime = Self.stamp(&state.microphone, buffer.frameLength, elapsed, captured, sampleRate)
             case .systemAudio:
-                startTime = Self.stamp(&state.systemAudio, buffer.frameLength, elapsed, sampleRate)
+                startTime = Self.stamp(&state.systemAudio, buffer.frameLength, elapsed, captured, sampleRate)
             }
             switch source {
             case .microphone:
@@ -212,24 +221,54 @@ final class CaptureBufferRelay: @unchecked Sendable {
 
     /// Returns the buffer's start time on the shared timeline, seeding the
     /// source's origin first if this is the buffer that resumes it.
+    ///
+    /// `capturedAt` is the instant the buffer's first sample was captured, on
+    /// the same clock as `elapsedSinceOpen`, when the capture layer knows it.
     private static func stamp(
         _ source: inout SourceState,
         _ frameCount: AVAudioFrameCount,
         _ elapsedSinceOpen: TimeInterval,
+        _ capturedAt: TimeInterval?,
         _ sampleRate: Double
     ) -> TimeInterval {
         if source.needsOrigin {
             source.needsOrigin = false
-            // A capture callback runs once its buffer is full, so the audio in
-            // it ends around now and started one buffer's worth earlier.
-            // Charging each source only for its own delivery latency is what
-            // stops two sources with different buffer sizes from landing a
+            // Without a capture time: a callback runs once its buffer is full,
+            // so the audio in it ends around now and started one buffer's worth
+            // earlier. Charging each source only for its own delivery latency is
+            // what stops two sources with different buffer sizes from landing a
             // buffer apart.
-            let begunAt = elapsedSinceOpen - Double(frameCount) / sampleRate
+            let begunAt = capturedAt ?? (elapsedSinceOpen - Double(frameCount) / sampleRate)
             source.clock.skip(toFrame: AVAudioFramePosition((begunAt * sampleRate).rounded()))
+        } else if let capturedAt {
+            // The source fell behind the time its own audio says it was
+            // captured at: it stopped delivering for a while — a stream that
+            // pauses across silence, a stalled device — or its hardware clock
+            // runs slow against the host's. Counting frames alone would close
+            // the hole up and slide everything after it earlier, and over an
+            // hour the two tracks drift far enough apart that replies land
+            // before the questions they answer.
+            //
+            // The capture time rather than now, because now cannot tell a gap
+            // from a late callback: a backlog delivered in one burst arrives
+            // late but carries its own, on-time capture times, and must not be
+            // pushed later for good — the clock never moves back.
+            let capturedFrame = AVAudioFramePosition((capturedAt * sampleRate).rounded())
+            if capturedFrame - source.clock.framesElapsed > AVAudioFramePosition(maximumLag * sampleRate) {
+                source.clock.skip(toFrame: capturedFrame)
+            }
         }
         return source.clock.advance(by: frameCount)
     }
+
+    /// How far a source may trail its own capture times before it is moved up
+    /// to them. Above the resampler's priming delay and the jitter in capture
+    /// timestamps; below anything that would audibly misalign the mix.
+    static let maximumLag: TimeInterval = 0.5
+
+    /// A capture time this far from now is on some other clock, not a late
+    /// buffer, and is ignored rather than allowed to move the timeline.
+    static let implausibleCaptureOffset: TimeInterval = 10
 
     private static func rms(of buffer: AVAudioPCMBuffer) -> Float {
         guard let samples = buffer.int16ChannelData?[0], buffer.frameLength > 0 else { return 0 }
