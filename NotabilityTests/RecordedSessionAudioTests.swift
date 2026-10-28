@@ -43,7 +43,7 @@ final class RecordedSessionAudioTests: XCTestCase {
         )
     }
 
-    /// The defect itself, as recordings before 2.2 suffered it: a crash or a
+    /// The defect itself, as recordings by earlier versions suffered it: a crash or a
     /// force quit leaves every MPEG-4 track with its samples written and its
     /// container unfinished.
     func test_unfinalized_tracks_are_reported_unreadable() throws {

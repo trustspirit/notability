@@ -3,7 +3,7 @@ import AVFoundation
 /// Reports what a meeting's recorded audio can still be used for.
 ///
 /// A file being on disk is not evidence that it can be decoded. Recordings made
-/// before 2.2 wrote each source to an MPEG-4 file, whose container is only
+/// by earlier versions wrote each source to an MPEG-4 file, whose container is only
 /// completed when `SessionRecorder.finish()` releases the `AVAudioFile`. Until
 /// then the file holds sample data behind a zeroed placeholder where the `moov`
 /// atom belongs, and no decoder will open it — a process that dies before
@@ -36,7 +36,7 @@ enum RecordedSessionAudio {
         directory.appendingPathComponent("\(source.fileBaseName).caf")
     }
 
-    /// Where versions before 2.2 wrote it, as AAC in MPEG-4. A meeting left
+    /// Where earlier versions wrote it, as AAC in MPEG-4. A meeting left
     /// waiting for Retry by one of them still has its audio here.
     static func legacyTrackURL(for source: AudioSource, in directory: URL) -> URL {
         directory.appendingPathComponent("\(source.fileBaseName).m4a")
