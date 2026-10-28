@@ -10,6 +10,17 @@ import Speech
 final class AnalyzerInputSinkTests: XCTestCase {
     private let captureFormat = AudioFixtures.format
 
+    /// Content rather than identity: `AnalyzerInput` copies the buffer it is
+    /// given on current SDKs, so the object that comes out is never the one
+    /// that went in even when nothing was converted.
+    private static func sameAudio(_ lhs: AVAudioPCMBuffer, _ rhs: AVAudioPCMBuffer) -> Bool {
+        guard lhs.format.isEqual(rhs.format), lhs.frameLength == rhs.frameLength,
+              let left = lhs.int16ChannelData?[0], let right = rhs.int16ChannelData?[0] else {
+            return false
+        }
+        return memcmp(left, right, Int(lhs.frameLength) * MemoryLayout<Int16>.size) == 0
+    }
+
     private func drain(_ stream: AsyncStream<AnalyzerInput>) -> Task<[AnalyzerInput], Never> {
         Task {
             var received: [AnalyzerInput] = []
@@ -44,7 +55,10 @@ final class AnalyzerInputSinkTests: XCTestCase {
         let received = await collector.value
         XCTAssertEqual(received.count, items.count)
         for (index, input) in received.enumerated() {
-            XCTAssertTrue(input.buffer === items[index].buffer, "buffer \(index) was copied or reordered")
+            XCTAssertTrue(
+                Self.sameAudio(input.buffer, items[index].buffer),
+                "buffer \(index) was converted or reordered"
+            )
         }
     }
 
@@ -65,9 +79,14 @@ final class AnalyzerInputSinkTests: XCTestCase {
 
         let received = await collector.value
         XCTAssertFalse(received.isEmpty)
+        // The advertised rate, in integer samples: `AnalyzerInput` traps on
+        // Float32 buffers, so the sample type is the one thing not followed.
         XCTAssertTrue(
-            received.allSatisfy { $0.buffer.format.isEqual(target) },
-            "every buffer must arrive in the format the analyzer advertised"
+            received.allSatisfy {
+                $0.buffer.format.sampleRate == target.sampleRate
+                    && $0.buffer.format.commonFormat == .pcmFormatInt16
+            },
+            "every buffer must arrive at the rate the analyzer advertised, as Int16"
         )
 
         // A converter that terminates after its first buffer still produces
@@ -113,7 +132,7 @@ final class AnalyzerInputSinkTests: XCTestCase {
 
         let received = await collector.value
         XCTAssertEqual(received.count, 1, "an empty buffer repeats the previous timestamp")
-        XCTAssertTrue(received.first?.buffer === real.buffer)
+        XCTAssertTrue(received.first.map { Self.sameAudio($0.buffer, real.buffer) } ?? false)
     }
 
     func test_sending_after_finish_is_ignored() async {

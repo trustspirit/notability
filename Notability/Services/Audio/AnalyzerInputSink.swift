@@ -13,7 +13,15 @@ import os
 /// analyzer reversed. Keeping one appender per source is the caller's contract;
 /// see `LiveTranscriptionServiceProtocol`.
 final class AnalyzerInputSink: @unchecked Sendable {
-    /// Format the analyzer advertised, or nil to feed buffers through unchanged.
+    /// The format buffers are delivered in: the one the analyzer advertised,
+    /// held to 16-bit integer samples, or nil to feed buffers through unchanged.
+    ///
+    /// Integer samples whatever was advertised, because on macOS 27
+    /// `AnalyzerInput(buffer:)` traps on every Float32 buffer it is handed —
+    /// an uncatchable crash, on the capture thread, in the middle of a
+    /// recording. Today the analyzer asks for 16 kHz Int16, which is the
+    /// capture format and passes straight through; this only matters the day
+    /// it asks for something else.
     let targetFormat: AVAudioFormat?
 
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
@@ -24,9 +32,20 @@ final class AnalyzerInputSink: @unchecked Sendable {
     private static let timescale: CMTimeScale = 1_000_000_000
 
     init(targetFormat: AVAudioFormat?, continuation: AsyncStream<AnalyzerInput>.Continuation) {
-        self.targetFormat = targetFormat
+        let delivered = targetFormat.map(Self.integerSamples(matching:))
+        self.targetFormat = delivered
         self.continuation = continuation
-        converter = targetFormat.map(ResamplingConverter.init(targetFormat:))
+        converter = delivered.map(ResamplingConverter.init(targetFormat:))
+    }
+
+    private static func integerSamples(matching format: AVAudioFormat) -> AVAudioFormat {
+        guard format.commonFormat != .pcmFormatInt16 else { return format }
+        return AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: format.sampleRate,
+            channels: format.channelCount,
+            interleaved: false
+        ) ?? format
     }
 
     /// Hands a captured buffer to the analyzer, resampling first if needed.
