@@ -425,7 +425,12 @@ final class MeetingStoreTests: XCTestCase {
             case .readable:
                 try AudioFixtures.writeTrack(AudioFixtures.tone(seconds: 0.5), to: url)
             case .unfinalized:
-                try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: url)
+                // Only the MPEG-4 tracks of older versions can be left
+                // undecodable; see `SessionRecorder`.
+                try AudioFixtures.writeUnfinalizedTrack(
+                    AudioFixtures.tone(seconds: 0.5),
+                    to: RecordedSessionAudio.legacyTrackURL(for: source, in: directory)
+                )
             }
         }
         return directory

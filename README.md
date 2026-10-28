@@ -12,7 +12,8 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 - **Live captions, on-device** — Apple's SpeechAnalyzer transcribes as you speak. No audio leaves your Mac for captions, and there is no per-minute cost.
 - **Speaker-separated final transcript** — When the meeting ends, the full recording is transcribed once with `gpt-4o-transcribe-diarize`, which labels each turn. Seeing the whole meeting at once gives far better punctuation and terminology than transcribing short fragments.
 - **AI-generated notes** — `gpt-5.5` by default then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
-- **Audio kept until notes succeed** — If transcription or note generation fails, the recording is retained so you can retry without re-recording.
+- **Audio kept until notes succeed** — If transcription or note generation fails, the recording is retained so you can retry without re-recording. A long meeting that is uploaded in pieces keeps each piece's transcript as it arrives, so Retry only sends the pieces that failed.
+- **Recordings survive a crash** — Tracks are written uncompressed, so a crash, force quit or flat battery mid-meeting still leaves everything recorded up to that moment ready to transcribe.
 - **Meeting history** — Every transcript and note is saved locally and accessible from the sidebar.
 
 ## Installation
@@ -105,6 +106,8 @@ open Notability.xcodeproj
   delete the meeting. It is kept only while a meeting still needs it — because a stage failed, or
   because quitting or a crash stopped one before it finished — so you can retry without
   re-recording. A launch that finds recorded audio no meeting needs any more deletes it.
+- While a meeting still needs its recording, it is held uncompressed — about 115 MB per hour for
+  each source — because that is the format that stays readable if the app dies mid-recording.
 - Meeting notes and transcripts are stored locally on your device only.
 - Your API key is stored with owner-only file permissions in
   `~/Library/Application Support/Notability/credentials` rather than the Keychain, because ad-hoc

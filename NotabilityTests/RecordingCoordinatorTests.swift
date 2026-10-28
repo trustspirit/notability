@@ -1081,7 +1081,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         for source in AudioSource.allCases {
             try AudioFixtures.writeUnfinalizedTrack(
                 AudioFixtures.tone(seconds: 0.5),
-                to: RecordedSessionAudio.trackURL(for: source, in: directory)
+                to: RecordedSessionAudio.legacyTrackURL(for: source, in: directory)
             )
         }
         meeting.audioDirectory = directory

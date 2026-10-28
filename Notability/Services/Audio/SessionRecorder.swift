@@ -17,17 +17,25 @@ protocol SessionAudioWriting: AnyObject {
     func finish()
 }
 
-/// Continuously records one capture source to an AAC file for the duration of a
-/// meeting. Roughly 11 MB per hour at 24 kbps, which keeps a two-hour meeting
-/// under the transcription API's 25 MB upload limit.
+/// Continuously records one capture source to an uncompressed 16-bit CAF file
+/// for the duration of a meeting.
+///
+/// Uncompressed because it is the only format that survives the process dying
+/// mid-recording. An MPEG-4 file is unreadable until its `moov` index is
+/// written at close, and AAC in CAF or PCM in WAV reopen as zero-length, so a
+/// crash, a force quit or a flat battery an hour into a meeting used to lose
+/// all of it. A PCM CAF is written with an open-ended data chunk and reopens
+/// with every frame that reached the disk. The cost is size — about 115 MB per
+/// hour per source, against 11 MB for AAC — which is held only until notes
+/// exist; what is uploaded is the AAC mix `AudioMixer` makes from these.
 ///
 /// A buffer whose `startTime` is ahead of where the file has been written to is
 /// preceded by exactly that much silence. Sources start at different moments
 /// and can stop delivering mid-recording, and without the padding those
 /// intervals would be cut out of the track rather than recorded as the gaps
-/// they are, sliding everything after them earlier. Silence costs the AAC
-/// bitrate like anything else — 3 KB per second — which for a start-up offset
-/// or a device switch is a few tens of kilobytes.
+/// they are, sliding everything after them earlier. Silence costs the same
+/// 32 KB per second as anything else, which for a start-up offset or a device
+/// switch is a few hundred kilobytes.
 final class SessionRecorder: SessionAudioWriting {
     let url: URL
 
@@ -57,20 +65,22 @@ final class SessionRecorder: SessionAudioWriting {
     init(directory: URL, source: AudioSource, sampleRate: Double) throws {
         self.sampleRate = sampleRate
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        url = directory.appendingPathComponent("\(source.fileBaseName).m4a")
+        url = RecordedSessionAudio.trackURL(for: source, in: directory)
         try? FileManager.default.removeItem(at: url)
         // commonFormat/interleaved declare the *processing* format the caller writes in
-        // (Int16, matching the 16 kHz mono capture format); the file itself still
-        // encodes to AAC per `settings`. Without this, AVAudioFile defaults its
-        // processing format to Float32 and `append` throws on the Int16 buffers
-        // the capture layer hands us.
+        // (Int16, matching the 16 kHz mono capture format). Without this, AVAudioFile
+        // defaults its processing format to Float32 and `append` throws on the Int16
+        // buffers the capture layer hands us.
         file = try AVAudioFile(
             forWriting: url,
             settings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: sampleRate,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 24_000
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false
             ],
             commonFormat: .pcmFormatInt16,
             interleaved: false

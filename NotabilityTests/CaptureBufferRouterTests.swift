@@ -80,8 +80,8 @@ final class CaptureBufferRouterTests: XCTestCase {
     private func makeSUT() -> Environment {
         let root = FileManager.default.temporaryDirectory
         let live = FakeLiveTranscriptionService()
-        let micWriter = FakeSessionAudioWriter(url: root.appendingPathComponent("mic.m4a"))
-        let systemWriter = FakeSessionAudioWriter(url: root.appendingPathComponent("system.m4a"))
+        let micWriter = FakeSessionAudioWriter(url: root.appendingPathComponent("mic.caf"))
+        let systemWriter = FakeSessionAudioWriter(url: root.appendingPathComponent("system.caf"))
         let router = CaptureBufferRouter(
             recorders: [.microphone: micWriter, .systemAudio: systemWriter],
             liveTranscription: live

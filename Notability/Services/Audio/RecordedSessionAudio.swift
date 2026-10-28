@@ -2,12 +2,14 @@ import AVFoundation
 
 /// Reports what a meeting's recorded audio can still be used for.
 ///
-/// A file being on disk is not evidence that it can be decoded. Each source is
-/// written to its own MPEG-4 file, and the container is only completed when
-/// `SessionRecorder.finish()` releases the `AVAudioFile`. Until then the file
-/// holds sample data behind a zeroed placeholder where the `moov` atom belongs,
-/// and no decoder will open it — a process that dies before finishing leaves
-/// exactly that.
+/// A file being on disk is not evidence that it can be decoded. Recordings made
+/// before 2.2 wrote each source to an MPEG-4 file, whose container is only
+/// completed when `SessionRecorder.finish()` releases the `AVAudioFile`. Until
+/// then the file holds sample data behind a zeroed placeholder where the `moov`
+/// atom belongs, and no decoder will open it — a process that dies before
+/// finishing leaves exactly that. Current recordings are PCM CAF, which reopens
+/// with everything written so far, so the unreadable case is now one only those
+/// older meetings can be in.
 ///
 /// The retention policy keeps audio until notes exist so any failure can be
 /// retried, and that only makes sense for audio a retry could read. Telling the
@@ -28,12 +30,32 @@ enum RecordedSessionAudio {
         case empty
     }
 
+    /// Where a recording writes `source`'s track. See `SessionRecorder` for
+    /// why it is a CAF.
     static func trackURL(for source: AudioSource, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(source.fileBaseName).caf")
+    }
+
+    /// Where versions before 2.2 wrote it, as AAC in MPEG-4. A meeting left
+    /// waiting for Retry by one of them still has its audio here.
+    static func legacyTrackURL(for source: AudioSource, in directory: URL) -> URL {
         directory.appendingPathComponent("\(source.fileBaseName).m4a")
     }
 
+    /// The file holding `source`'s track for this meeting, whichever version
+    /// wrote it. The current location when neither exists.
+    static func existingTrackURL(for source: AudioSource, in directory: URL) -> URL {
+        let current = trackURL(for: source, in: directory)
+        let legacy = legacyTrackURL(for: source, in: directory)
+        if !FileManager.default.fileExists(atPath: current.path),
+           FileManager.default.fileExists(atPath: legacy.path) {
+            return legacy
+        }
+        return current
+    }
+
     static func inspect(directory: URL) -> Inspection {
-        let tracks = AudioSource.allCases.map { trackURL(for: $0, in: directory) }
+        let tracks = AudioSource.allCases.map { existingTrackURL(for: $0, in: directory) }
         let withAudio = tracks.filter { holdsAudio($0) }
         if !withAudio.isEmpty { return .usable(tracks: withAudio) }
 

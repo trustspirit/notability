@@ -43,14 +43,15 @@ final class RecordedSessionAudioTests: XCTestCase {
         )
     }
 
-    /// The defect itself: a crash or a force quit leaves every track with its
-    /// samples written and its container unfinished.
+    /// The defect itself, as recordings before 2.2 suffered it: a crash or a
+    /// force quit leaves every MPEG-4 track with its samples written and its
+    /// container unfinished.
     func test_unfinalized_tracks_are_reported_unreadable() throws {
-        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: url(.microphone))
-        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: url(.systemAudio))
+        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: legacyURL(.microphone))
+        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: legacyURL(.systemAudio))
 
         XCTAssertNil(
-            try? AVAudioFile(forReading: url(.microphone)),
+            try? AVAudioFile(forReading: legacyURL(.microphone)),
             "The fixture has to be genuinely undecodable or this proves nothing"
         )
         XCTAssertEqual(RecordedSessionAudio.inspect(directory: directory), .unreadable)
@@ -61,7 +62,7 @@ final class RecordedSessionAudioTests: XCTestCase {
     /// what survives it is still worth transcribing.
     func test_one_finished_track_beside_an_unfinalized_one_is_still_usable() throws {
         try write(.microphone, AudioFixtures.tone(seconds: 0.5))
-        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: url(.systemAudio))
+        try AudioFixtures.writeUnfinalizedTrack(AudioFixtures.tone(seconds: 0.5), to: legacyURL(.systemAudio))
 
         XCTAssertEqual(
             RecordedSessionAudio.inspect(directory: directory),
@@ -106,6 +107,10 @@ final class RecordedSessionAudioTests: XCTestCase {
 
     private func url(_ source: AudioSource) -> URL {
         RecordedSessionAudio.trackURL(for: source, in: directory)
+    }
+
+    private func legacyURL(_ source: AudioSource) -> URL {
+        RecordedSessionAudio.legacyTrackURL(for: source, in: directory)
     }
 
     private func write(_ source: AudioSource, _ buffer: AVAudioPCMBuffer) throws {

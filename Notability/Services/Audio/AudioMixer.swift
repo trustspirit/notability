@@ -20,7 +20,7 @@ enum AudioMixerError: Error, LocalizedError {
 /// That is sufficient because the capture layer has already done the aligning:
 /// every buffer is stamped against one origin shared by both sources, and
 /// `SessionRecorder` pads each track with silence up to its buffers' start
-/// times. So frame *n* of `mic.m4a` and frame *n* of `system.m4a` are the same
+/// times. So frame *n* of `mic.caf` and frame *n* of `system.caf` are the same
 /// instant of the meeting, however far apart the two sources started.
 ///
 /// Tracks are read and written in fixed-size chunks rather than decoded whole,

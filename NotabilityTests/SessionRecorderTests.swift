@@ -20,8 +20,30 @@ final class SessionRecorderTests: XCTestCase {
         recorder.append(AudioFixtures.tone(seconds: 0.5), startTime: 0)
         recorder.finish()
 
-        XCTAssertEqual(recorder.url.lastPathComponent, "mic.m4a")
+        XCTAssertEqual(recorder.url.lastPathComponent, "mic.caf")
         XCTAssertTrue(FileManager.default.fileExists(atPath: recorder.url.path))
+    }
+
+    /// What a crash leaves behind: the file as it stands while the recorder
+    /// still has it open. An MPEG-4 track was undecodable in that state and
+    /// the whole meeting was lost; this one must open with what was written.
+    func test_a_track_that_was_never_closed_can_still_be_read() throws {
+        let recorder = try SessionRecorder(directory: directory, source: .microphone, sampleRate: 16_000)
+        for index in 0..<10 {
+            recorder.append(AudioFixtures.tone(seconds: 1.0), startTime: Double(index))
+        }
+
+        var length: AVAudioFramePosition = 0
+        let deadline = Date().addingTimeInterval(5)
+        while length < 16_000 * 5, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            let snapshot = directory.appendingPathComponent("snapshot-\(UUID().uuidString).caf")
+            try FileManager.default.copyItem(at: recorder.url, to: snapshot)
+            length = (try? AVAudioFile(forReading: snapshot).length) ?? 0
+        }
+        recorder.finish()
+
+        XCTAssertGreaterThanOrEqual(length, 16_000 * 5, "an unclosed track must expose what was written")
     }
 
     func test_recorded_duration_matches_appended_audio() throws {

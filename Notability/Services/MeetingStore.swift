@@ -115,7 +115,7 @@ final class MeetingStore: ObservableObject, MeetingStoreProtocol {
     ///
     /// The audio goes with the record. It is only kept so a failed run can be
     /// retried, and a deleted meeting will never be retried; leaving it behind
-    /// cost roughly 33 MB per recorded hour that nothing would ever reclaim.
+    /// cost roughly 240 MB per recorded hour that nothing would ever reclaim.
     func delete(id: UUID) {
         let recordURL = storageDirectory.appendingPathComponent("\(id.uuidString).json")
         // The recorded location and the conventional one. They are normally the

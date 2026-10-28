@@ -319,9 +319,8 @@ final class RecordingCoordinator: ObservableObject {
 
     /// Ends the recording, leaves the audio on disk and does not process it.
     ///
-    /// This is what quitting mid-recording does. Finishing the writers is what
-    /// completes the MPEG-4 containers, and therefore the only thing that makes
-    /// the files readable at the next launch; the meeting then records why it has
+    /// This is what quitting mid-recording does. Finishing the writers flushes
+    /// what they still hold and closes the files; the meeting then records why it has
     /// no notes so nothing downstream has to guess. What it deliberately does
     /// not do is start the paid transcription — the user asked to quit, and the
     /// retention policy already covers processing it later.
@@ -342,9 +341,9 @@ final class RecordingCoordinator: ObservableObject {
     ///
     /// `applicationWillTerminate` cannot await, so this does only the part that
     /// has to happen before the process dies: releasing the writers, which
-    /// completes the containers. Without it the files hold sample data behind an
-    /// unwritten `moov` atom that no decoder will open, which is what used to
-    /// leave an interrupted meeting offering a Retry that could never succeed.
+    /// flushes their queues and closes the files. The CAF tracks stay readable
+    /// without it — see `SessionRecorder` — but whatever was still queued for the
+    /// disk would be lost.
     ///
     /// A no-op once either stop path has run, and a no-op when nothing is
     /// recording. It does not describe the meeting's state: the store reads the
@@ -607,8 +606,8 @@ final class RecordingCoordinator: ObservableObject {
             try AudioMixer.mix(tracks: tracks, to: mixedURL)
         }.value
 
-        let micURL = RecordedSessionAudio.trackURL(for: .microphone, in: directory)
-        let systemURL = RecordedSessionAudio.trackURL(for: .systemAudio, in: directory)
+        let micURL = RecordedSessionAudio.existingTrackURL(for: .microphone, in: directory)
+        let systemURL = RecordedSessionAudio.existingTrackURL(for: .systemAudio, in: directory)
         // Membership rather than existence: `tracks` is already filtered to what
         // a decoder can open, and handing the extractor a file that will not is
         // no better than not having one.
