@@ -155,6 +155,64 @@ final class SegmentedTranscriptionServiceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path), "the mix itself must survive")
     }
 
+    /// The segments that came back before a failure were paid for. Retry must
+    /// only send what is still missing.
+    func testARetryOnlySendsTheSegmentsThatHadNotSucceeded() async throws {
+        let failing = SequencedTranscriptionService(results: [
+            .success(transcription(at: 0, "one")),
+            .success(transcription(at: 0, "two")),
+            .failure(TestError.segmentFailed)
+        ])
+        do {
+            _ = try await SegmentedTranscriptionService(inner: failing, config: testConfig())
+                .transcribe(audioURL: source, speakerReference: nil, language: "ko")
+            XCTFail("expected the failed segment to fail the transcription")
+        } catch {}
+
+        let retry = SequencedTranscriptionService(results: [.success(transcription(at: 0, "three"))])
+        let merged = try await SegmentedTranscriptionService(inner: retry, config: testConfig())
+            .transcribe(audioURL: source, speakerReference: nil, language: "ko")
+
+        XCTAssertEqual(retry.callCount, 1)
+        XCTAssertEqual(merged.chunks.map(\.text), ["one", "two", "three"])
+    }
+
+    /// A saved result answers the request it was made for. Asked in another
+    /// language, the segment has to be transcribed again.
+    func testSavedSegmentsAreNotReusedForADifferentLanguage() async throws {
+        let failing = SequencedTranscriptionService(results: [
+            .success(transcription(at: 0, "one")),
+            .failure(TestError.segmentFailed)
+        ])
+        _ = try? await SegmentedTranscriptionService(inner: failing, config: testConfig())
+            .transcribe(audioURL: source, speakerReference: nil, language: "ko")
+
+        let retry = SequencedTranscriptionService(results: [
+            .success(transcription(at: 0, "uno")),
+            .success(transcription(at: 0, "dos")),
+            .success(transcription(at: 0, "tres"))
+        ])
+        let merged = try await SegmentedTranscriptionService(inner: retry, config: testConfig())
+            .transcribe(audioURL: source, speakerReference: nil, language: "es")
+
+        XCTAssertEqual(retry.callCount, 3)
+        XCTAssertEqual(merged.chunks.map(\.text), ["uno", "dos", "tres"])
+    }
+
+    func testSavedSegmentsAreRemovedOnceTheTranscriptIsComplete() async throws {
+        let inner = SequencedTranscriptionService(results: [
+            .success(transcription(at: 0, "one")),
+            .success(transcription(at: 0, "two")),
+            .success(transcription(at: 0, "three"))
+        ])
+
+        _ = try await SegmentedTranscriptionService(inner: inner, config: testConfig())
+            .transcribe(audioURL: source, speakerReference: nil, language: nil)
+
+        let saved = directory.appendingPathComponent(SegmentedTranscriptionService.resultsDirectoryName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: saved.path))
+    }
+
     private enum TestError: Error {
         case segmentFailed
     }

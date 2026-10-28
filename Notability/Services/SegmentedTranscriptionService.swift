@@ -13,6 +13,13 @@ import Foundation
 /// them in order means the first failure stops the rest instead of paying for
 /// uploads whose transcript is already lost.
 ///
+/// Each segment's result is saved next to the recording as soon as it comes
+/// back. A meeting split three ways that fails on its third request would
+/// otherwise throw away the two transcripts already paid for, and Retry would
+/// pay for them again — the longer the meeting, the more likely some request
+/// fails, so this is where long meetings lost the most. The saved results go
+/// with the recording's directory once the meeting no longer needs it.
+///
 /// What splitting costs is speaker continuity: each request labels speakers
 /// from scratch, so only the local speaker — named by the reference clip that
 /// goes up with every request — keeps one identity across the whole meeting.
@@ -49,17 +56,35 @@ final class SegmentedTranscriptionService: FinalTranscriptionServiceProtocol {
             config: config
         )
 
+        // A recording short enough for one request has nothing to resume.
+        let cache = segments.count > 1
+            ? SegmentResultCache(
+                directory: audioURL.deletingLastPathComponent()
+                    .appendingPathComponent(Self.resultsDirectoryName),
+                segmentCount: segments.count,
+                language: language,
+                hasSpeakerReference: speakerReference != nil
+            )
+            : nil
+
         var chunks: [TranscriptChunk] = []
         var billedSeconds: Int?
         for (index, segment) in segments.enumerated() {
-            // A cancellation that lands between two segments has no in-flight
-            // request to kill, so nothing else would stop the next upload.
-            try Task.checkCancellation()
-            let transcription = try await inner.transcribe(
-                audioURL: segment.url,
-                speakerReference: speakerReference,
-                language: language
-            )
+            let transcription: DiarizedTranscription
+            if let saved = cache?.load(index: index, startTime: segment.startTime) {
+                transcription = saved
+            } else {
+                // A cancellation that lands between two segments has no
+                // in-flight request to kill, so nothing else would stop the
+                // next upload.
+                try Task.checkCancellation()
+                transcription = try await inner.transcribe(
+                    audioURL: segment.url,
+                    speakerReference: speakerReference,
+                    language: language
+                )
+                cache?.save(transcription, index: index, startTime: segment.startTime)
+            }
             chunks += transcription.chunks.map {
                 TranscriptChunk(
                     timestamp: $0.timestamp + segment.startTime,
@@ -71,8 +96,13 @@ final class SegmentedTranscriptionService: FinalTranscriptionServiceProtocol {
                 billedSeconds = (billedSeconds ?? 0) + seconds
             }
         }
+        cache?.clear()
         return DiarizedTranscription(chunks: chunks, billedSeconds: billedSeconds)
     }
+
+    /// Beside the recording rather than inside the `segments` working
+    /// directory, which is deleted on every exit, failures included.
+    static let resultsDirectoryName = "segment-transcripts"
 
     /// Diarization letters are assigned per request, so the "B" of one segment
     /// is not the "B" of the next. Numbering them by segment says that out
@@ -87,5 +117,72 @@ final class SegmentedTranscriptionService: FinalTranscriptionServiceProtocol {
             return speaker
         }
         return "\(speaker)\(index + 1)"
+    }
+}
+
+/// One saved file per finished segment request.
+///
+/// A saved result is only reused for the same cut: the same number of
+/// segments, starting at the same place, transcribed with the same language and
+/// with or without a speaker reference as before. The cuts are a deterministic
+/// function of the recording, so a retry of the same meeting finds them again;
+/// anything else that changed means the saved text answers a different request
+/// and is ignored.
+///
+/// Saving is best effort. A result that cannot be written costs only the
+/// resume, never the transcription that produced it.
+private struct SegmentResultCache {
+    let directory: URL
+    let segmentCount: Int
+    let language: String?
+    let hasSpeakerReference: Bool
+
+    private struct Entry: Codable {
+        let segmentCount: Int
+        let startTime: TimeInterval
+        let language: String?
+        let hasSpeakerReference: Bool
+        let chunks: [TranscriptChunk]
+        let billedSeconds: Int?
+    }
+
+    /// Cut positions are recomputed from the decoded file, so they are compared
+    /// to the millisecond rather than exactly.
+    private static let startTimeTolerance: TimeInterval = 0.001
+
+    func load(index: Int, startTime: TimeInterval) -> DiarizedTranscription? {
+        guard let data = try? Data(contentsOf: url(for: index)),
+              let entry = try? JSONDecoder().decode(Entry.self, from: data),
+              entry.segmentCount == segmentCount,
+              abs(entry.startTime - startTime) < Self.startTimeTolerance,
+              entry.language == language,
+              entry.hasSpeakerReference == hasSpeakerReference else {
+            return nil
+        }
+        return DiarizedTranscription(chunks: entry.chunks, billedSeconds: entry.billedSeconds)
+    }
+
+    func save(_ transcription: DiarizedTranscription, index: Int, startTime: TimeInterval) {
+        let entry = Entry(
+            segmentCount: segmentCount,
+            startTime: startTime,
+            language: language,
+            hasSpeakerReference: hasSpeakerReference,
+            chunks: transcription.chunks,
+            billedSeconds: transcription.billedSeconds
+        )
+        guard let data = try? JSONEncoder().encode(entry) else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: url(for: index), options: .atomic)
+    }
+
+    /// Once the whole transcript exists the meeting stores it, and nothing will
+    /// read these again.
+    func clear() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func url(for index: Int) -> URL {
+        directory.appendingPathComponent("segment-\(index).json")
     }
 }
