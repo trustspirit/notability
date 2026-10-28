@@ -172,10 +172,35 @@ final class DiarizedTranscriptionService: FinalTranscriptionServiceProtocol {
             let text: String
             let speaker: String?
         }
+        /// Accepts whole or fractional seconds, and reports nothing for a
+        /// token-based usage block, which has no seconds at all.
         struct Usage: Decodable {
             let seconds: Int?
+
+            enum CodingKeys: String, CodingKey { case seconds }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                if let whole = try? c.decodeIfPresent(Int.self, forKey: .seconds) {
+                    seconds = whole
+                } else if let fractional = try? c.decodeIfPresent(Double.self, forKey: .seconds) {
+                    seconds = Int(fractional.rounded(.up))
+                } else {
+                    seconds = nil
+                }
+            }
         }
         let segments: [Segment]
         let usage: Usage?
+
+        enum CodingKeys: String, CodingKey { case segments, usage }
+
+        /// `usage` only feeds the cost display. A shape change there must not
+        /// throw away a transcript that has already been paid for.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            segments = try c.decode([Segment].self, forKey: .segments)
+            usage = try? c.decodeIfPresent(Usage.self, forKey: .usage)
+        }
     }
 }

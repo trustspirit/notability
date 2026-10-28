@@ -65,6 +65,32 @@ final class DiarizedTranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(result.billedSeconds, 27)
     }
 
+    /// `usage` only feeds the cost display; a shape it does not expect must
+    /// not throw away a transcript that has been paid for.
+    func test_a_token_based_usage_block_still_yields_the_transcript() async throws {
+        let payload = Data("""
+        {"segments":[{"start":0.0,"end":1.0,"text":"hi","speaker":"A"}],
+         "usage":{"type":"tokens","input_tokens":10,"output_tokens":2,"total_tokens":12}}
+        """.utf8)
+        let sut = makeSUT(client: MockHTTPClient(responseData: payload, statusCode: 200))
+
+        let result = try await sut.transcribe(audioURL: audioURL, speakerReference: nil, language: nil)
+
+        XCTAssertEqual(result.chunks.map(\.text), ["hi"])
+        XCTAssertNil(result.billedSeconds)
+    }
+
+    func test_fractional_billed_seconds_round_up() async throws {
+        let payload = Data("""
+        {"segments":[{"start":0.0,"end":1.0,"text":"hi"}],"usage":{"type":"duration","seconds":12.2}}
+        """.utf8)
+        let sut = makeSUT(client: MockHTTPClient(responseData: payload, statusCode: 200))
+
+        let result = try await sut.transcribe(audioURL: audioURL, speakerReference: nil, language: nil)
+
+        XCTAssertEqual(result.billedSeconds, 13)
+    }
+
     func test_sends_diarize_model_and_format() async throws {
         let client = MockHTTPClient(responseData: Self.successPayload, statusCode: 200)
         let sut = makeSUT(client: client)
