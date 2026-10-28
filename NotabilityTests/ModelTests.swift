@@ -67,6 +67,22 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(settings.effectiveTranscriptionLocaleIdentifier, "ja")
     }
 
+    /// Served by the Responses API only, so chat completions for it always
+    /// failed; a user who chose it is moved to a model that works.
+    func test_a_stored_responses_only_model_falls_back_to_the_default() throws {
+        let defaults = try makeIsolatedUserDefaults()
+        defaults.set("gpt-5.5-pro", forKey: "noteModel")
+
+        XCTAssertEqual(ModelSettings(userDefaults: defaults).noteModel, "gpt-5.5")
+    }
+
+    func test_a_custom_model_name_is_kept() throws {
+        let defaults = try makeIsolatedUserDefaults()
+        defaults.set("gpt-4.1", forKey: "noteModel")
+
+        XCTAssertEqual(ModelSettings(userDefaults: defaults).noteModel, "gpt-4.1")
+    }
+
     private func makeIsolatedUserDefaults() throws -> UserDefaults {
         let suiteName = "ModelTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

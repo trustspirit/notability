@@ -5,10 +5,12 @@ final class ModelSettings: ObservableObject {
 
     static let noteModels = [
         "gpt-5.5",
-        "gpt-5.5-pro",
         "gpt-4o",
         "gpt-4o-mini"
     ]
+
+    /// Models the chat completions endpoint rejects.
+    private static let responsesOnlyModels: Set<String> = ["gpt-5.5-pro"]
 
     // Hard cap on user-supplied instructions appended to the note-generation prompt.
     // Keeps prompt size bounded and limits how far user text can drown out the base contract.
@@ -66,7 +68,12 @@ final class ModelSettings: ObservableObject {
 
     init(userDefaults: UserDefaults = .standard) {
         defaults = userDefaults
-        noteModel = userDefaults.string(forKey: "noteModel") ?? "gpt-5.5"
+        // `gpt-5.5-pro` was offered once, but it is served by the Responses
+        // API only, so every chat completion sent for it failed. A user who
+        // picked it is moved to the default rather than left failing; any
+        // other name typed into the field is the user's choice and is kept.
+        noteModel = userDefaults.string(forKey: "noteModel")
+            .flatMap { Self.responsesOnlyModels.contains($0) ? nil : $0 } ?? "gpt-5.5"
         transcriptionLanguage = userDefaults.string(forKey: "transcriptionLanguage") ?? "ko"
         noteInstructions = userDefaults.string(forKey: "noteInstructions") ?? ""
         // Falls back to capturing everything rather than to the stored string,
