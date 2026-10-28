@@ -5,22 +5,25 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         case httpError(Int, String?)
         case missingContent
         case invalidResponse
-        case missingAPIKey
+        case missingAPIKey(NoteModelProvider)
         case truncated
+        case refused
 
         var errorDescription: String? {
             switch self {
-            case .missingAPIKey:
-                return "OpenAI API key is not set. Go to Settings and enter your API key."
+            case .missingAPIKey(let provider):
+                return "\(provider.displayName) API key is not set. Go to Settings and enter your \(provider.displayName) API key, or choose a model from another provider."
             case .httpError(let code, let message):
-                if let message { return "OpenAI error (\(code)): \(message)" }
-                return "OpenAI API returned HTTP \(code). Check your API key and quota."
+                if let message { return "Note generation failed (HTTP \(code)): \(message)" }
+                return "Note generation failed with HTTP \(code). Check your API key and quota."
             case .missingContent:
-                return "OpenAI returned an empty response."
+                return "The model returned an empty response."
             case .invalidResponse:
-                return "Received an unexpected response from OpenAI."
+                return "Received an unexpected response from the note generation API."
             case .truncated:
                 return "The notes were cut off before they were complete. Your transcript is saved, so Retry will try again."
+            case .refused:
+                return "The model declined to write notes for this transcript. Your transcript is saved; try Retry with a different note model."
             }
         }
     }
@@ -40,26 +43,37 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
     private let httpClient: HTTPClient
     private let retryPolicy: RetryPolicy
     private let sleep: (TimeInterval) async throws -> Void
+    private let model: () -> String
 
     init(
         httpClient: HTTPClient = URLSession.shared,
         retryPolicy: RetryPolicy = NoteGenerationService.retryPolicy,
         sleep: @escaping (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-        }
+        },
+        model: @escaping () -> String = { ModelSettings.shared.noteModel }
     ) {
         self.httpClient = httpClient
         self.retryPolicy = retryPolicy
         self.sleep = sleep
+        self.model = model
     }
 
     func generateNotes(transcript: [TranscriptChunk]) async throws -> MeetingNotes {
-        let prompt = Self.composedSystemPrompt(userInstructions: ModelSettings.shared.noteInstructions)
-        let gptResponse = try await chatCompletion(
-            systemPrompt: prompt,
+        let model = model()
+        let provider = NoteModelProvider(model: model)
+        guard let apiKey = CredentialsStore.load(forKey: provider.credentialKey), !apiKey.isEmpty else {
+            throw APIError.missingAPIKey(provider)
+        }
+        let request = try Self.request(
+            provider: provider,
+            model: model,
+            apiKey: apiKey,
+            systemPrompt: Self.composedSystemPrompt(userInstructions: ModelSettings.shared.noteInstructions),
             userContent: Self.transcriptText(transcript)
         )
-        return try parseNotes(from: gptResponse)
+        let content = try await send(request, provider: provider)
+        return try parseNotes(from: content)
     }
 
     /// One line per turn, with the speaker when diarization named one. Without
@@ -93,13 +107,33 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         return systemPrompt + "\n\nAdditional instructions from the user (apply when generating the summary and items, but DO NOT change the JSON schema above):\n\(trimmed)"
     }
 
-    private func chatCompletion(systemPrompt: String, userContent: String) async throws -> String {
-        guard let apiKey = CredentialsStore.load(forKey: "com.notability.openai-api-key"), !apiKey.isEmpty else {
-            throw APIError.missingAPIKey
+    private static func request(
+        provider: NoteModelProvider,
+        model: String,
+        apiKey: String,
+        systemPrompt: String,
+        userContent: String
+    ) throws -> URLRequest {
+        switch provider {
+        case .openAI:
+            return try openAIRequest(model: model, apiKey: apiKey, systemPrompt: systemPrompt, userContent: userContent)
+        case .anthropic:
+            return try anthropicRequest(model: model, apiKey: apiKey, systemPrompt: systemPrompt, userContent: userContent)
         }
+    }
+
+    private static func openAIRequest(
+        model: String,
+        apiKey: String,
+        systemPrompt: String,
+        userContent: String
+    ) throws -> URLRequest {
         let body: [String: Any] = [
-            "model": ModelSettings.shared.noteModel,
-            "response_format": Self.responseFormat,
+            "model": model,
+            "response_format": [
+                "type": "json_schema",
+                "json_schema": ["name": "meeting_notes", "strict": true, "schema": notesSchema] as [String: Any]
+            ] as [String: Any],
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userContent]
@@ -107,13 +141,66 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         ]
         var request = URLRequest(
             url: URL(string: "https://api.openai.com/v1/chat/completions")!,
-            timeoutInterval: Self.requestTimeout
+            timeoutInterval: requestTimeout
         )
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
 
+    static let anthropicVersion = "2026-10-21"
+    static let anthropicFallbackBeta = "server-side-fallback-2026-07-01"
+
+    /// Room for the notes and the thinking that precedes them. The request is
+    /// not streamed, and much more than this would risk outlasting the
+    /// connection; a cut-off answer is retried rather than parsed.
+    static let anthropicMaxTokens = 16_000
+
+    /// Models that accept `fallbacks: "default"`, which re-runs a request a
+    /// safety classifier declined on another model inside the same call. Sent
+    /// only to these: any other model rejects the parameter outright.
+    private static let anthropicFallbackModels: Set<String> = [
+        "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"
+    ]
+
+    private static func anthropicRequest(
+        model: String,
+        apiKey: String,
+        systemPrompt: String,
+        userContent: String
+    ) throws -> URLRequest {
+        var body: [String: Any] = [
+            "model": model,
+            "max_tokens": anthropicMaxTokens,
+            "system": systemPrompt,
+            "messages": [["role": "user", "content": userContent]],
+            "output_config": [
+                // Summarising a meeting is not where deeper reasoning pays
+                // for its minutes; set explicitly because the default differs
+                // between models.
+                "effort": "medium",
+                "format": ["type": "json_schema", "schema": notesSchema] as [String: Any]
+            ] as [String: Any]
+        ]
+        let usesFallback = anthropicFallbackModels.contains(model)
+        if usesFallback { body["fallbacks"] = "default" }
+
+        var request = URLRequest(
+            url: URL(string: "https://api.anthropic.com/v1/messages")!,
+            timeoutInterval: requestTimeout
+        )
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
+        if usesFallback { request.setValue(anthropicFallbackBeta, forHTTPHeaderField: "anthropic-beta") }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    private func send(_ request: URLRequest, provider: NoteModelProvider) async throws -> String {
         var lastError: Error = APIError.invalidResponse
         for attempt in 0..<retryPolicy.maxAttempts {
             let failure: (error: Error, retryable: Bool)
@@ -121,8 +208,12 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
                 let (data, response) = try await httpClient.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
                 if (200..<300).contains(http.statusCode) {
-                    return try Self.content(of: data)
+                    switch provider {
+                    case .openAI: return try Self.openAIContent(of: data)
+                    case .anthropic: return try Self.anthropicContent(of: data)
+                    }
                 }
+                // Both providers put the reason at error.message.
                 let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                     .flatMap { $0["error"] as? [String: Any] }
                     .flatMap { $0["message"] as? String }
@@ -134,7 +225,8 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
                 throw CancellationError()
             } catch let error as APIError {
                 // A response that arrived but cannot be used. A cut-off answer
-                // is worth asking for again; a malformed one would only repeat.
+                // is worth asking for again; a malformed or declined one would
+                // only repeat.
                 failure = (error, error == .truncated)
             } catch {
                 failure = (error, RetryPolicy.isRetryable(error: error))
@@ -150,7 +242,7 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
     /// The model's message from a chat completion. Tests stub the notes JSON
     /// directly, with no `choices` wrapper, so a body that is already the
     /// notes is passed through.
-    private static func content(of data: Data) throws -> String {
+    private static func openAIContent(of data: Data) throws -> String {
         guard let rawText = String(data: data, encoding: .utf8),
               rawText.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{"),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
@@ -164,6 +256,28 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
             throw APIError.missingContent
         }
         return content
+    }
+
+    /// The notes from a Messages API response: its text block. Thinking and
+    /// fallback blocks can come before it and are skipped. The stop reason is
+    /// read first, because a declined or cut-off answer is not the schema's
+    /// JSON however it looks.
+    private static func anthropicContent(of data: Data) throws -> String {
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let blocks = json["content"] as? [[String: Any]] else {
+            throw APIError.invalidResponse
+        }
+        switch json["stop_reason"] as? String {
+        case "refusal": throw APIError.refused
+        case "max_tokens": throw APIError.truncated
+        default: break
+        }
+        let text = blocks
+            .filter { $0["type"] as? String == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        guard !text.isEmpty else { throw APIError.missingContent }
+        return text
     }
 
     private func parseNotes(from jsonString: String) throws -> MeetingNotes {
@@ -212,39 +326,33 @@ final class NoteGenerationService: NoteGenerationServiceProtocol {
         }
     }
 
-    /// Structured Outputs: the server constrains generation to this schema, so
-    /// `summary` cannot come back as an object of sections and no key can be
-    /// dropped — the two ways long meetings used to fail parsing.
-    private static let responseFormat: [String: Any] = [
-        "type": "json_schema",
-        "json_schema": [
-            "name": "meeting_notes",
-            "strict": true,
-            "schema": [
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["summary", "action_items", "key_decisions"],
-                "properties": [
-                    "summary": ["type": "string"],
-                    "action_items": [
-                        "type": "array",
-                        "items": [
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["description", "assignee", "due_date"],
-                            "properties": [
-                                "description": ["type": "string"],
-                                "assignee": ["type": ["string", "null"]],
-                                "due_date": ["type": ["string", "null"]]
-                            ]
-                        ]
-                    ],
-                    "key_decisions": [
-                        "type": "array",
-                        "items": ["type": "string"]
+    /// Structured Outputs on both providers: the server constrains generation
+    /// to this schema, so `summary` cannot come back as an object of sections
+    /// and no key can be dropped — the two ways long meetings used to fail
+    /// parsing.
+    private static let notesSchema: [String: Any] = [
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "action_items", "key_decisions"],
+        "properties": [
+            "summary": ["type": "string"],
+            "action_items": [
+                "type": "array",
+                "items": [
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["description", "assignee", "due_date"],
+                    "properties": [
+                        "description": ["type": "string"],
+                        "assignee": ["type": ["string", "null"]],
+                        "due_date": ["type": ["string", "null"]]
                     ]
                 ]
-            ] as [String: Any]
+            ],
+            "key_decisions": [
+                "type": "array",
+                "items": ["type": "string"]
+            ]
         ] as [String: Any]
     ]
 

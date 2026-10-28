@@ -2,98 +2,31 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @State private var apiKey: String = ""
-    @State private var showKey = false
-    @State private var saved = false
-    @State private var keyIsSaved = false
     /// nil until the on-device availability lookup answers for the current language.
     @State private var liveCaptionsSupported: Bool?
     @ObservedObject private var modelSettings = ModelSettings.shared
 
-    private let credentialKey = "com.notability.openai-api-key"
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.xl) {
-                apiKeySection
+                APIKeySection(
+                    provider: .openAI,
+                    placeholder: "sk-…",
+                    purpose: "Required. Every meeting is transcribed with OpenAI, and its models can also write the notes."
+                )
+                APIKeySection(
+                    provider: .anthropic,
+                    placeholder: "sk-ant-…",
+                    purpose: "Optional. Only needed when the note generation model below is a Claude model."
+                )
                 modelsSection
                 noteInstructionsSection
             }
             .padding(Spacing.xl)
             .overlayScrollerStyle()
         }
-        .frame(width: 520, height: 640)
+        .frame(width: 520, height: 720)
         .background(BrandColor.surfaceElevated)
-        .onAppear {
-            let stored = CredentialsStore.load(forKey: credentialKey) ?? ""
-            apiKey = stored
-            keyIsSaved = !stored.isEmpty
-        }
-    }
-
-    // MARK: - API key
-
-    private var apiKeySection: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
-            SectionTitle(text: "OpenAI API Key")
-            Card {
-                VStack(alignment: .leading, spacing: Spacing.md) {
-                    HStack(spacing: Spacing.sm) {
-                        Group {
-                            if showKey {
-                                TextField("sk-…", text: $apiKey)
-                            } else {
-                                SecureField("sk-…", text: $apiKey)
-                            }
-                        }
-                        .textFieldStyle(.roundedBorder)
-
-                        Button {
-                            showKey.toggle()
-                        } label: {
-                            Image(systemName: showKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.bordered)
-                        .help(showKey ? "Hide key" : "Show key")
-                    }
-
-                    HStack(spacing: Spacing.sm) {
-                        Button {
-                            CredentialsStore.save(apiKey, forKey: credentialKey)
-                            keyIsSaved = true
-                            saved = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
-                        } label: {
-                            Label("Save Key", systemImage: "lock.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(apiKey.isEmpty)
-
-                        if keyIsSaved {
-                            Button(role: .destructive) {
-                                CredentialsStore.delete(forKey: credentialKey)
-                                apiKey = ""
-                                keyIsSaved = false
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-                        if saved {
-                            Label("Saved", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(BrandColor.success)
-                                .font(.callout.weight(.medium))
-                        }
-                        Spacer()
-                    }
-
-                    Text("Stored in ~/Library/Application Support/Notability/ with owner-only file permissions.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
     }
 
     // MARK: - Models
@@ -108,6 +41,9 @@ struct SettingsView: View {
                         value: $modelSettings.noteModel,
                         presets: ModelSettings.noteModels
                     )
+                    Text("Models whose name starts with “claude-” use your Anthropic key; all others use OpenAI.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     ModelField(
                         label: "Language (BCP-47)",
                         value: $modelSettings.transcriptionLanguage,
@@ -236,6 +172,90 @@ private struct ModelField: View {
                 .fixedSize()
                 .help("Choose a preset")
             }
+        }
+    }
+}
+
+/// Entry, reveal, save and removal of one provider's API key.
+private struct APIKeySection: View {
+    let provider: NoteModelProvider
+    let placeholder: String
+    let purpose: String
+
+    @State private var apiKey: String = ""
+    @State private var showKey = false
+    @State private var saved = false
+    @State private var keyIsSaved = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            SectionTitle(text: "\(provider.displayName) API Key")
+            Card {
+                VStack(alignment: .leading, spacing: Spacing.md) {
+                    Text(purpose)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: Spacing.sm) {
+                        Group {
+                            if showKey {
+                                TextField(placeholder, text: $apiKey)
+                            } else {
+                                SecureField(placeholder, text: $apiKey)
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+
+                        Button {
+                            showKey.toggle()
+                        } label: {
+                            Image(systemName: showKey ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.bordered)
+                        .help(showKey ? "Hide key" : "Show key")
+                    }
+
+                    HStack(spacing: Spacing.sm) {
+                        Button {
+                            CredentialsStore.save(apiKey, forKey: provider.credentialKey)
+                            keyIsSaved = true
+                            saved = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
+                        } label: {
+                            Label("Save Key", systemImage: "lock.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(apiKey.isEmpty)
+
+                        if keyIsSaved {
+                            Button(role: .destructive) {
+                                CredentialsStore.delete(forKey: provider.credentialKey)
+                                apiKey = ""
+                                keyIsSaved = false
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        if saved {
+                            Label("Saved", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(BrandColor.success)
+                                .font(.callout.weight(.medium))
+                        }
+                        Spacer()
+                    }
+
+                    Text("Stored in ~/Library/Application Support/Notability/ with owner-only file permissions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .onAppear {
+            let stored = CredentialsStore.load(forKey: provider.credentialKey) ?? ""
+            apiKey = stored
+            keyIsSaved = !stored.isEmpty
         }
     }
 }

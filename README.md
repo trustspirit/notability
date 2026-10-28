@@ -11,7 +11,7 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 - **Microphone-only recording** — For in-person meetings there is nothing on screen to capture, so the mode can be set before recording from the sidebar checkbox or the menu bar's **Start Recording (Microphone Only)**. It asks for no Screen Recording permission and reports no missing system audio. Speaker names are left off these transcripts: with no system track there is no way to tell the local user's voice from anyone else's around the same microphone, so speakers are separated but labelled A, B, C rather than risking a confident wrong name.
 - **Live captions, on-device** — Apple's SpeechAnalyzer transcribes as you speak. No audio leaves your Mac for captions, and there is no per-minute cost.
 - **Speaker-separated final transcript** — When the meeting ends, the full recording is transcribed once with `gpt-4o-transcribe-diarize`, which labels each turn. Seeing the whole meeting at once gives far better punctuation and terminology than transcribing short fragments.
-- **AI-generated notes** — `gpt-5.5` by default then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made.
+- **AI-generated notes** — `gpt-5.5` by default then reads the transcript and produces a 2–3 sentence summary, action items with assignee and due date, and the key decisions made. Claude can write the notes instead: choose `claude-opus-5-5` (or type any `claude-` model name) in Settings and add an Anthropic API key.
 - **Audio kept until notes succeed** — If transcription or note generation fails, the recording is retained so you can retry without re-recording. A long meeting that is uploaded in pieces keeps each piece's transcript as it arrives, so Retry only sends the pieces that failed.
 - **Recordings survive a crash** — Tracks are written uncompressed, so a crash, force quit or flat battery mid-meeting still leaves everything recorded up to that moment ready to transcribe.
 - **Meeting history** — Every transcript and note is saved locally and accessible from the sidebar.
@@ -22,6 +22,7 @@ A macOS menu bar app that records your meetings — your own voice plus the audi
 
 - macOS 26.0 (Tahoe) or later
 - OpenAI API Key ([get one here](https://platform.openai.com/api-keys))
+- Optional: Anthropic API Key ([get one here](https://console.anthropic.com/settings/keys)), only to generate notes with Claude
 
 Versions 1.5.0 and earlier ran on macOS 14. On-device live captions need the Speech framework
 introduced in macOS 26, so 2.0.0 raises the floor. If you are on an older macOS, Check for Updates
@@ -81,9 +82,9 @@ withheld rather than installed and broken.
 | Audio encoding | AVFoundation |
 | Live transcription | Apple Speech (`SpeechAnalyzer`, on-device) |
 | Final transcription | OpenAI `gpt-4o-transcribe-diarize` |
-| Note generation | OpenAI gpt-5.5 (configurable) |
+| Note generation | OpenAI gpt-5.5 by default, or Anthropic Claude (configurable) |
 | Storage | Local JSON (`~/Library/Application Support/Notability`) |
-| API key | Owner-only file in `~/Library/Application Support/Notability/credentials` |
+| API keys | Owner-only files in `~/Library/Application Support/Notability/credentials` |
 
 ## Building from Source
 
@@ -101,7 +102,7 @@ open Notability.xcodeproj
 
 - Live captions are produced entirely on your Mac. No audio is sent anywhere for them.
 - The recording is uploaded to the OpenAI API after the meeting ends, for the final transcript
-  — once, or in a few pieces if the meeting ran long; the transcript is then sent for note generation (subject to OpenAI's Privacy Policy).
+  — once, or in a few pieces if the meeting ran long; the transcript is then sent for note generation to OpenAI, or to Anthropic when a Claude model is selected (subject to that provider's privacy policy).
 - The recording is deleted from disk as soon as notes are generated successfully, and when you
   delete the meeting. It is kept only while a meeting still needs it — because a stage failed, or
   because quitting or a crash stopped one before it finished — so you can retry without

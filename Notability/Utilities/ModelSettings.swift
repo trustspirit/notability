@@ -5,6 +5,7 @@ final class ModelSettings: ObservableObject {
 
     static let noteModels = [
         "gpt-5.5",
+        "claude-opus-5-5",
         "gpt-4o",
         "gpt-4o-mini"
     ]
@@ -88,6 +89,32 @@ final class ModelSettings: ObservableObject {
         // pay for the migration on every launch forever.
         for key in Self.legacyTranscriptionKeys where userDefaults.object(forKey: key) != nil {
             userDefaults.removeObject(forKey: key)
+        }
+    }
+}
+
+/// Who serves a note-generation model, which decides the endpoint, the request
+/// shape and the API key. Read off the model name, so a model typed into the
+/// settings field by hand routes the same way as a preset.
+enum NoteModelProvider: Equatable {
+    case openAI
+    case anthropic
+
+    init(model: String) {
+        self = model.lowercased().hasPrefix("claude-") ? .anthropic : .openAI
+    }
+
+    var credentialKey: String {
+        switch self {
+        case .openAI: return "com.notability.openai-api-key"
+        case .anthropic: return "com.notability.anthropic-api-key"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .openAI: return "OpenAI"
+        case .anthropic: return "Anthropic"
         }
     }
 }
