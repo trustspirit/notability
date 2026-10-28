@@ -31,6 +31,26 @@ final class SpeakerReferenceExtractorTests: XCTestCase {
         XCTAssertEqual(duration, 10.0, accuracy: 0.05)
     }
 
+    /// Ten clean seconds are rare in a lively meeting; a shorter clean clip
+    /// still names the local speaker, where none leaves them a letter.
+    func test_falls_back_to_a_shorter_window_when_no_long_one_qualifies() throws {
+        let micURL = directory.appendingPathComponent("mic.wav")
+        let systemURL = directory.appendingPathComponent("system.wav")
+        try AudioFixtures.writeWAV(AudioFixtures.tone(seconds: 15, amplitude: 0.4), to: micURL)
+        // The far end talks for all but seven seconds of the mic's speech.
+        try AudioFixtures.writeWAV(AudioFixtures.buffer(seconds: 15) { index in
+            index < 16_000 * 7 ? 0 : 0.4 * sinf(Float(index) / 3)
+        }, to: systemURL)
+
+        let reference = try SpeakerReferenceExtractor.extract(micURL: micURL, systemURL: systemURL)
+
+        let data = try XCTUnwrap(reference)
+        let extractedURL = directory.appendingPathComponent("ref.wav")
+        try data.write(to: extractedURL)
+        let file = try AVAudioFile(forReading: extractedURL)
+        XCTAssertEqual(Double(file.length) / file.processingFormat.sampleRate, 5.0, accuracy: 0.05)
+    }
+
     func test_returns_nil_when_mic_is_silent() throws {
         let micURL = directory.appendingPathComponent("mic.wav")
         try AudioFixtures.writeWAV(AudioFixtures.silence(seconds: 20), to: micURL)

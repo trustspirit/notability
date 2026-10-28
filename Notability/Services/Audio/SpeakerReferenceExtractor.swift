@@ -19,6 +19,12 @@ import AVFoundation
 enum SpeakerReferenceExtractor {
     struct Config {
         var windowDuration: TimeInterval = 10
+        /// Tried only when no stretch of `windowDuration` qualifies. In a
+        /// lively meeting the local user rarely talks for ten seconds with
+        /// nobody else making a sound, and without any reference their turns
+        /// lose their name for the whole meeting. The API accepts clips from
+        /// two seconds, so a shorter clean one beats none. nil disables it.
+        var fallbackWindowDuration: TimeInterval? = 5
         var analysisWindow: TimeInterval = 0.02
         var speechRMSThreshold: Float = 0.005
         var silenceRMSThreshold: Float = 0.002
@@ -34,9 +40,24 @@ enum SpeakerReferenceExtractor {
         systemURL: URL?,
         config: Config = Config()
     ) throws -> Data? {
+        if let reference = try extract(micURL: micURL, systemURL: systemURL, windowDuration: config.windowDuration, config: config) {
+            return reference
+        }
+        guard let fallback = config.fallbackWindowDuration, fallback < config.windowDuration else {
+            return nil
+        }
+        return try extract(micURL: micURL, systemURL: systemURL, windowDuration: fallback, config: config)
+    }
+
+    private static func extract(
+        micURL: URL,
+        systemURL: URL?,
+        windowDuration: TimeInterval,
+        config: Config
+    ) throws -> Data? {
         let micFile = try AVAudioFile(forReading: micURL)
         let sampleRate = micFile.processingFormat.sampleRate
-        let windowFrames = Int(config.windowDuration * sampleRate)
+        let windowFrames = Int(windowDuration * sampleRate)
         guard micFile.length >= AVAudioFramePosition(windowFrames) else { return nil }
 
         let blockFrames = max(1, Int(config.analysisWindow * sampleRate))
